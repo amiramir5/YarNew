@@ -94,7 +94,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setIsLoading(false);
           return;
         }
-        const res = await signUp(cleanEmail, password, name, role, pairCode);
+        const res = await signUp(cleanEmail, password, name, role);
         if (!res.ok) {
           setErrorMessage(res.error || 'خطا در ثبت‌نام حساب کاربری.');
           setIsLoading(false);
@@ -303,20 +303,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:border-blue-500"
                   />
                 </div>
-              </div>
-
-              {/* Pairing code */}
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  کد اختصاصی اتاق دونفره (Pair Code):
-                </label>
-                <input
-                  type="text"
-                  value={pairCode}
-                  onChange={(e) => setPairCode(e.target.value.toUpperCase())}
-                  placeholder="مثال: KY-DUO777"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono uppercase text-center tracking-wider focus:outline-hidden focus:border-blue-500"
-                />
               </div>
             </>
           )}

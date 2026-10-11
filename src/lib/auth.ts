@@ -253,8 +253,7 @@ export async function signUpWithEmail(
   email: string,
   pass: string,
   name?: string,
-  role?: 'husband' | 'wife',
-  pairCode?: string
+  role?: 'husband' | 'wife'
 ): Promise<{ ok: boolean; error?: string; user?: User; requiresVerification?: boolean }> {
   const client = getSupabaseClient();
   const cleanEmail = email.trim().toLowerCase();
@@ -282,7 +281,6 @@ export async function signUpWithEmail(
           name: determinedName,
           full_name: determinedName,
           role: determinedRole,
-          pair_code: pairCode || getCoupleSettings().pairCode,
         },
       },
     });

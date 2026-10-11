@@ -29,7 +29,6 @@ jobs:
 
       - name: Build
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           APP_URL: https://amiramir5.github.io/YarNew/
           BASE_PATH: /YarNew/
         run: bun run build

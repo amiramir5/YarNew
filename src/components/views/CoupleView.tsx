@@ -14,6 +14,12 @@ import {
   TrendingUp,
   Database,
   Radio,
+  Copy,
+  LogOut,
+  UserPlus,
+  ShieldCheck,
+  AlertCircle,
+  Key,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -35,6 +41,10 @@ import {
   broadcastMyState,
   fetchRemotePartnerState,
   subscribeToPartnerRealtime,
+  createPairRoom,
+  joinPairRoom,
+  leavePairRoom,
+  fetchMyPairStatus,
   DEFAULT_PAIR_CODE,
 } from '../../lib/coupleSync';
 import { testSupabaseConnection } from '../../lib/supabase';
@@ -75,9 +85,28 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
   const [pairSavedSuccess, setPairSavedSuccess] = useState(false);
   const [sqlCopied, setSqlCopied] = useState(false);
 
+  // Pair Room Management via Secure RPC
+  const [pairStatus, setPairStatus] = useState<any>(null);
+  const [inviteInput, setInviteInput] = useState('');
+  const [createdInviteCode, setCreatedInviteCode] = useState<string | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [pairActionError, setPairActionError] = useState<string | null>(null);
+  const [isPairActionLoading, setIsPairActionLoading] = useState(false);
+
   // Partner State (Live & Synced via Supabase)
   const [partnerState, setPartnerState] = useState<CoupleMemberState>(() => getStoredPartnerState());
   const [isSyncing, setIsSyncing] = useState(false);
+
+  // Load Pair Status on Mount
+  useEffect(() => {
+    fetchMyPairStatus().then((status) => {
+      setPairStatus(status);
+      if (status.inPair && status.pairCode) {
+        setPairCode(status.pairCode);
+        if (status.inviteCode) setCreatedInviteCode(status.inviteCode);
+      }
+    });
+  }, []);
 
   // Sync state whenever settings change
   useEffect(() => {
@@ -190,13 +219,68 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
   const diffMinutes = ownTodayMinutes - partnerTodayMinutes;
   const isAhead = diffMinutes >= 0;
 
+  const handleCreateRoom = async () => {
+    setIsPairActionLoading(true);
+    setPairActionError(null);
+    const res = await createPairRoom();
+    setIsPairActionLoading(false);
+    if (!res.ok) {
+      setPairActionError(res.error || 'خطا در ایجاد اتاق');
+    } else if (res.data) {
+      setPairCode(res.data.pair_code);
+      setCreatedInviteCode(res.data.invite_code);
+      setPairStatus({
+        inPair: true,
+        pairCode: res.data.pair_code,
+        role: res.data.role,
+        inviteCode: res.data.invite_code,
+        memberCount: 1,
+      });
+      fetchRemotePartnerState().then((remote) => {
+        if (remote) setPartnerState(remote);
+      });
+    }
+  };
+
+  const handleJoinRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inviteInput.trim()) return;
+    setIsPairActionLoading(true);
+    setPairActionError(null);
+    const res = await joinPairRoom(inviteInput.trim());
+    setIsPairActionLoading(false);
+    if (!res.ok) {
+      setPairActionError(res.error || 'کد دعوت نامعتبر یا منقضی شده است.');
+    } else if (res.data) {
+      setPairCode(res.data.pair_code);
+      setInviteInput('');
+      const status = await fetchMyPairStatus();
+      setPairStatus(status);
+      fetchRemotePartnerState().then((remote) => {
+        if (remote) setPartnerState(remote);
+      });
+    }
+  };
+
+  const handleLeaveRoom = async () => {
+    if (!window.confirm('آیا مطمئن هستید که می‌خواهید از اتاق مطالعه دونفره خارج شوید؟')) {
+      return;
+    }
+    setIsPairActionLoading(true);
+    await leavePairRoom();
+    setPairCode('');
+    setCreatedInviteCode(null);
+    setPairStatus({ inPair: false });
+    setIsPairActionLoading(false);
+  };
+
   const handleSavePairSettings = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanMyEmail = myEmail.trim();
     const cleanPartnerEmail = partnerEmail.trim();
-    const cleanMyName = myName.trim() || (cleanMyEmail.toLowerCase().includes('amir') ? 'امیرمحمد' : 'امیرمحمد');
-    const cleanPartnerName = partnerName.trim() || 'همسرم';
-    const cleanPairCode = pairCode.trim() || DEFAULT_PAIR_CODE;
+    const cleanMyName = myName.trim() || (myRole === 'husband' ? 'امیرمحمد' : 'آرمیتا');
+    const cleanPartnerName = partnerName.trim() || (myRole === 'husband' ? 'آرمیتا' : 'امیرمحمد');
+    const cleanPairCode = pairCode.trim();
 
     saveCoupleSettings({
       myRole,
@@ -344,6 +428,25 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
       {/* TAB 1: TODAY LIVE BATTLE */}
       {activeTab === 'today' && (
         <div className="space-y-6 animate-in fade-in duration-200">
+          {!pairCode && (
+            <div className="neu-card p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="flex items-center gap-2.5 text-amber-800 dark:text-amber-200">
+                <AlertCircle className="w-5 h-5 text-amber-600 shrink-0" />
+                <div>
+                  <p className="font-extrabold text-sm">اتاق مطالعه دونفره هنوز متصل نشده است</p>
+                  <p className="text-[11px] opacity-80 mt-0.5">برای مشاهده زنده تایمر همسر و همگام‌سازی ابری، یک اتاق دونفره بسازید یا با کد دعوت ملحق شوید.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveTab('settings')}
+                className="px-4 py-2 rounded-xl neu-btn-primary font-bold shrink-0 cursor-pointer self-start sm:self-auto text-xs"
+              >
+                ساخت یا پیوستن به اتاق
+              </button>
+            </div>
+          )}
+
           {/* Who is Ahead Banner */}
           <div className="neu-card p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-3 min-w-0">
@@ -674,11 +777,165 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
       {/* TAB 4: PAIR SETTINGS */}
       {activeTab === 'settings' && (
         <div className="space-y-6 animate-in fade-in duration-200 max-w-xl">
+          {/* Pair Room Management Card (Secure Crypto RPC) */}
+          <div className="neu-card p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200/60 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-blue-600" />
+                <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                  مدیریت اتصال اتاق دونفره (اتصال امن)
+                </h3>
+              </div>
+              {pairCode ? (
+                <span className="px-2.5 py-1 rounded-full bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-bold text-[11px] flex items-center gap-1">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>متصل به اتاق</span>
+                </span>
+              ) : (
+                <span className="px-2.5 py-1 rounded-full bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-bold text-[11px] flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <span>عدم اتصال</span>
+                </span>
+              )}
+            </div>
+
+            {pairActionError && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-800/50 text-red-700 dark:text-red-300 text-xs font-bold flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{pairActionError}</span>
+              </div>
+            )}
+
+            {pairCode ? (
+              /* Already in a pair */
+              <div className="space-y-4 text-xs">
+                <div className="p-4 rounded-xl neu-inset space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 dark:text-slate-400 font-bold">شناسه اختصاصی اتاق شما:</span>
+                    <span className="font-mono font-extrabold text-blue-600 text-sm">{pairCode}</span>
+                  </div>
+
+                  {/* If invite code exists and room is waiting for partner */}
+                  {(createdInviteCode || (pairStatus?.inviteCode && pairStatus?.memberCount === 1)) && (
+                    <div className="p-3 rounded-lg bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-800/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-extrabold text-blue-900 dark:text-blue-200">
+                          کد دعوت یک‌بارمصرف برای همسر:
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const codeToCopy = createdInviteCode || pairStatus?.inviteCode || '';
+                            navigator.clipboard.writeText(codeToCopy);
+                            setInviteCopied(true);
+                            setTimeout(() => setInviteCopied(false), 2500);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-blue-600 text-white font-bold text-[11px] flex items-center gap-1 cursor-pointer hover:bg-blue-700 transition-colors"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>{inviteCopied ? 'کپی شد!' : 'کپی کد دعوت'}</span>
+                        </button>
+                      </div>
+                      <div className="font-mono text-center text-lg font-black tracking-widest text-blue-700 dark:text-blue-300 py-1 bg-white dark:bg-slate-900 rounded-md border border-blue-100 dark:border-blue-900/50 select-all">
+                        {createdInviteCode || pairStatus?.inviteCode}
+                      </div>
+                      <p className="text-[11px] text-blue-700/80 dark:text-blue-300/80 leading-relaxed">
+                        این کد تا ۴۸ ساعت معتبر است. همسر شما می‌تواند با وارد کردن این کد در بخش «پیوستن به اتاق با کد دعوت»، بلافاصله به اتاق متصل شود.
+                      </p>
+                    </div>
+                  )}
+
+                  {pairStatus?.memberCount === 2 && (
+                    <div className="text-[11px] text-blue-700 dark:text-blue-400 font-bold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                      <span>اتاق دونفره کامل است (۲ از ۲ عضو متصل هستند). داده‌های مطالعه زنده همگام‌سازی می‌شوند.</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={handleLeaveRoom}
+                    disabled={isPairActionLoading}
+                    className="px-4 py-2 rounded-xl border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 font-bold hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>خروج از این اتاق دونفره</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Not in a pair: show Create or Join */
+              <div className="space-y-4 text-xs">
+                <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                  برای رقابت زنده و همگام‌سازی تایمر مطالعه، یکی از دو روش زیر را انتخاب کنید:
+                </p>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  {/* Option 1: Create room */}
+                  <div className="p-4 rounded-xl neu-raised-sm flex flex-col justify-between space-y-3">
+                    <div>
+                      <div className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-slate-100">
+                        <UserPlus className="w-4 h-4 text-blue-600 shrink-0" />
+                        <span>ساخت اتاق جدید</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+                        اتاق اختصاصی بسازید و کد دعوت تولیدشده را برای همسرتان بفرستید.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleCreateRoom}
+                      disabled={isPairActionLoading}
+                      className="w-full py-2.5 px-3 rounded-xl neu-btn-primary font-bold cursor-pointer transition-all disabled:opacity-50 text-center"
+                    >
+                      {isPairActionLoading ? 'در حال ساخت...' : 'ایجاد اتاق و دریافت کد دعوت'}
+                    </button>
+                  </div>
+
+                  {/* Option 2: Join room */}
+                  <form onSubmit={handleJoinRoom} className="p-4 rounded-xl neu-raised-sm flex flex-col justify-between space-y-3">
+                    <div>
+                      <div className="flex items-center gap-1.5 font-extrabold text-slate-800 dark:text-slate-100">
+                        <Key className="w-4 h-4 text-blue-600 shrink-0" />
+                        <span>پیوستن با کد دعوت</span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1.5 leading-relaxed">
+                        اگر همسرتان اتاقی ساخته است، کد دعوت دریافتی را وارد کنید:
+                      </p>
+                    </div>
+
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={inviteInput}
+                        onChange={(e) => setInviteInput(e.target.value.toUpperCase())}
+                        placeholder="مثال: INV-A1B2C3D4"
+                        className="w-full px-3 py-2 rounded-lg neu-inset font-mono uppercase text-center font-bold text-blue-700 dark:text-blue-300"
+                        dir="ltr"
+                      />
+                      <button
+                        type="submit"
+                        disabled={isPairActionLoading || !inviteInput.trim()}
+                        className="w-full py-2 px-3 rounded-xl neu-btn-primary font-bold cursor-pointer transition-all disabled:opacity-50"
+                      >
+                        {isPairActionLoading ? 'در حال اتصال...' : 'پیوستن به اتاق'}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* User Names & Personalization Card */}
           <div className="neu-card p-6 space-y-5">
             <div className="flex items-center gap-2 pb-3 border-b border-slate-200/60 dark:border-slate-800">
               <Settings className="w-4 h-4 text-blue-600 shrink-0" />
               <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                شخصی‌سازی نام‌ها و کد اتاق دونفره
+                شخصی‌سازی نام‌ها و پروفایل
               </h3>
             </div>
 
@@ -769,28 +1026,12 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 />
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-600 dark:text-slate-300 mb-1">
-                  کد اختصاصی اتصال اتاق مطالعه (Pair Code)
-                </label>
-                <input
-                  type="text"
-                  value={pairCode}
-                  onChange={(e) => setPairCode(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl neu-inset font-mono text-center font-bold text-blue-700 dark:text-blue-300"
-                  dir="ltr"
-                />
-                <span className="text-[11px] text-slate-400 mt-1 block">
-                  همین کد را روی دستگاه همسرتان نیز وارد کنید تا داده‌های زنده مستقیماً همگام شوند.
-                </span>
-              </div>
-
               <div className="pt-2 flex items-center gap-3">
                 <button
                   type="submit"
                   className="px-6 py-2.5 rounded-xl neu-btn-primary font-bold cursor-pointer"
                 >
-                  ذخیره تنظیمات دونفره
+                  ذخیره نام‌ها و اطلاعات
                 </button>
 
                 {pairSavedSuccess && (

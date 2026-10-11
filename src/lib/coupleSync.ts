@@ -52,7 +52,7 @@ export function generatePairCode(): string {
 
 export const DEFAULT_HUSBAND_NAME = 'امیرمحمد';
 export const DEFAULT_WIFE_NAME = 'آرمیتا';
-export const DEFAULT_PAIR_CODE = 'KY-DUO777';
+export const DEFAULT_PAIR_CODE = '';
 
 let serverClockOffsetMs = 0;
 
@@ -80,7 +80,7 @@ export function getCoupleSettings(): CoupleSettings {
   if (typeof window === 'undefined') {
     return {
       myRole: 'husband',
-      pairCode: 'KY-DUO777',
+      pairCode: '',
       myName: DEFAULT_HUSBAND_NAME,
       partnerName: DEFAULT_WIFE_NAME,
       myEmail: '',
@@ -90,11 +90,7 @@ export function getCoupleSettings(): CoupleSettings {
   }
 
   const role = (localStorage.getItem(STORAGE_KEYS.ROLE) as 'husband' | 'wife') || 'husband';
-  let pairCode = localStorage.getItem(STORAGE_KEYS.PAIR_CODE);
-  if (!pairCode) {
-    pairCode = 'KY-DUO777';
-    localStorage.setItem(STORAGE_KEYS.PAIR_CODE, pairCode);
-  }
+  const pairCode = localStorage.getItem(STORAGE_KEYS.PAIR_CODE) || '';
 
   const myEmail = localStorage.getItem(STORAGE_KEYS.MY_EMAIL) || '';
   const partnerEmail = localStorage.getItem(STORAGE_KEYS.PARTNER_EMAIL) || '';
@@ -114,7 +110,7 @@ export function saveCoupleSettings(settings: Partial<CoupleSettings>): void {
 
   const prev = getCoupleSettings();
   const role = settings.myRole || prev.myRole;
-  const pairCode = (settings.pairCode || prev.pairCode).trim().toUpperCase();
+  const pairCode = settings.pairCode !== undefined ? settings.pairCode.trim().toUpperCase() : prev.pairCode;
 
   localStorage.setItem(STORAGE_KEYS.ROLE, role);
   localStorage.setItem(STORAGE_KEYS.PAIR_CODE, pairCode);
@@ -141,6 +137,150 @@ export function saveCoupleSettings(settings: Partial<CoupleSettings>): void {
       })
     );
   } catch {}
+}
+
+/**
+ * Create a new duo room using the secure crypto RPC create_pair
+ */
+export async function createPairRoom(): Promise<{
+  ok: boolean;
+  data?: { pair_code: string; invite_code: string; role: 'husband' | 'wife'; expires_at: string };
+  error?: string;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, error: 'ارتباط با پایگاه داده Supabase برقرار نیست.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('create_pair');
+    if (error) {
+      return { ok: false, error: error.message || 'خطا در ایجاد اتاق دونفره.' };
+    }
+
+    if (data && data.pair_code) {
+      saveCoupleSettings({
+        pairCode: data.pair_code,
+        myRole: data.role || 'husband',
+      });
+      return { ok: true, data };
+    }
+    return { ok: false, error: 'پاسخ نامعتبر از سرور.' };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'خطا در برقراری ارتباط با سرور.' };
+  }
+}
+
+/**
+ * Join an existing duo room with a single-use invite code using the secure join_pair RPC
+ */
+export async function joinPairRoom(inviteCode: string): Promise<{
+  ok: boolean;
+  data?: { pair_code: string; role: 'husband' | 'wife' };
+  error?: string;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, error: 'ارتباط با پایگاه داده Supabase برقرار نیست.' };
+  }
+
+  const cleanCode = inviteCode.trim().toUpperCase();
+  if (!cleanCode) {
+    return { ok: false, error: 'لطفاً کد دعوت را وارد نمایید.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('join_pair', { p_invite_code: cleanCode });
+    if (error) {
+      return { ok: false, error: error.message || 'کد دعوت نامعتبر است یا منقضی شده است.' };
+    }
+
+    if (data && data.pair_code) {
+      saveCoupleSettings({
+        pairCode: data.pair_code,
+        myRole: data.role || 'wife',
+      });
+      return { ok: true, data };
+    }
+    return { ok: false, error: 'پاسخ نامعتبر از سرور.' };
+  } catch (err: any) {
+    return { ok: false, error: err.message || 'خطا در پیوستن به اتاق.' };
+  }
+}
+
+/**
+ * Leave current duo room using leave_pair RPC
+ */
+export async function leavePairRoom(): Promise<{ ok: boolean; error?: string }> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    saveCoupleSettings({ pairCode: '' });
+    return { ok: true };
+  }
+
+  try {
+    const { error } = await supabase.rpc('leave_pair');
+    if (error) {
+      console.warn('RPC leave_pair notice:', error.message);
+    }
+    saveCoupleSettings({ pairCode: '' });
+    if (sharedPairChannel) {
+      try {
+        supabase.removeChannel(sharedPairChannel);
+      } catch {}
+      sharedPairChannel = null;
+      channelSubscribed = false;
+    }
+    return { ok: true };
+  } catch {
+    saveCoupleSettings({ pairCode: '' });
+    return { ok: true };
+  }
+}
+
+/**
+ * Fetch current pair status from get_my_pair_status RPC
+ */
+export async function fetchMyPairStatus(): Promise<{
+  inPair: boolean;
+  pairCode?: string;
+  role?: 'husband' | 'wife';
+  inviteCode?: string;
+  expiresAt?: string;
+  memberCount?: number;
+  partnerName?: string;
+  partnerEmail?: string;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) return { inPair: false };
+
+  try {
+    const { data, error } = await supabase.rpc('get_my_pair_status');
+    if (error || !data) return { inPair: false };
+
+    if (data.in_pair && data.pair_code) {
+      saveCoupleSettings({
+        pairCode: data.pair_code,
+        myRole: data.role || 'husband',
+        partnerName: data.partner_name || undefined,
+        partnerEmail: data.partner_email || undefined,
+      });
+
+      return {
+        inPair: true,
+        pairCode: data.pair_code,
+        role: data.role,
+        inviteCode: data.invite_code,
+        expiresAt: data.expires_at,
+        memberCount: data.member_count,
+        partnerName: data.partner_name,
+        partnerEmail: data.partner_email,
+      };
+    }
+    return { inPair: false };
+  } catch {
+    return { inPair: false };
+  }
 }
 
 /**
@@ -308,6 +448,7 @@ export async function broadcastMyState(
   options: { persistToDb?: boolean } = {}
 ): Promise<void> {
   const settings = getCoupleSettings();
+  if (!settings.pairCode) return;
   const day = studyDayKey();
 
   const fullState: CoupleMemberState = {
@@ -443,6 +584,7 @@ export function savePartnerState(state: CoupleMemberState) {
  */
 export async function fetchRemotePartnerState(): Promise<CoupleMemberState | null> {
   const settings = getCoupleSettings();
+  if (!settings.pairCode) return null;
   const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
   const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
 
@@ -517,7 +659,9 @@ export function subscribeToPartnerRealtime(onPartnerUpdate: (state: CoupleMember
   const settings = getCoupleSettings();
   realtimeSubscribers.add(onPartnerUpdate);
 
-  getOrCreatePairChannel(settings.pairCode);
+  if (settings.pairCode) {
+    getOrCreatePairChannel(settings.pairCode);
+  }
 
   return () => {
     realtimeSubscribers.delete(onPartnerUpdate);
