@@ -34,7 +34,7 @@ import {
 } from '../../lib/jalali';
 import { getSubject } from '../../lib/constants';
 import { Subject3DIcon } from '../common/Subject3DIcon';
-import { getStoredPartnerState, getCoupleSettings } from '../../lib/coupleSync';
+import { getStoredPartnerState, getCoupleSettings, CoupleMemberState } from '../../lib/coupleSync';
 
 interface HomeViewProps {
   sessions: Session[];
@@ -45,6 +45,7 @@ interface HomeViewProps {
   liveTimerSeconds: number;
   isTimerRunning: boolean;
   activeTimerSubject?: string;
+  partnerState?: CoupleMemberState;
   onNavigate: (view: ViewId) => void;
   onEditExamDate: () => void;
   onOpenQuickSessionModal: () => void;
@@ -59,6 +60,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   liveTimerSeconds,
   isTimerRunning,
   activeTimerSubject,
+  partnerState: propPartnerState,
   onNavigate,
   onEditExamDate,
   onOpenQuickSessionModal,
@@ -68,7 +70,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
   const daysLeft = calcDaysLeft(settings.examDate);
 
   const coupleConfig = getCoupleSettings();
-  const partnerLive = getStoredPartnerState();
+  const partnerLive = propPartnerState || getStoredPartnerState();
   const partnerTodayMins = Math.round(partnerLive.todaySeconds / 60);
 
   // Today study calculations

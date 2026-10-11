@@ -38,6 +38,7 @@ import {
   DEFAULT_PAIR_CODE,
 } from '../../lib/coupleSync';
 import { testSupabaseConnection } from '../../lib/supabase';
+import { switchActiveUser } from '../../lib/auth';
 import { getSubject } from '../../lib/constants';
 import { Avatar3DBadge } from '../common/Avatar3DBadge';
 
@@ -79,14 +80,35 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
 
   // Sync state whenever settings change
   useEffect(() => {
+    const syncState = () => {
+      const cur = getCoupleSettings();
+      setMyRole(cur.myRole);
+      setMyEmail(cur.myEmail || '');
+      setPartnerEmail(cur.partnerEmail || '');
+      setPairCode(cur.pairCode);
+      setMyName(cur.myName);
+      setPartnerName(cur.partnerName);
+    };
+
+    syncState();
+    window.addEventListener('konkoor_profile_switched', syncState);
+    return () => window.removeEventListener('konkoor_profile_switched', syncState);
+  }, []);
+
+  const handleRoleQuickSwitch = (target: 'husband' | 'wife') => {
+    switchActiveUser(target);
     const cur = getCoupleSettings();
     setMyRole(cur.myRole);
     setMyEmail(cur.myEmail || '');
     setPartnerEmail(cur.partnerEmail || '');
-    setPairCode(cur.pairCode);
     setMyName(cur.myName);
     setPartnerName(cur.partnerName);
-  }, []);
+    setPairSavedSuccess(true);
+    setTimeout(() => setPairSavedSuccess(false), 2000);
+    fetchRemotePartnerState().then((remote) => {
+      if (remote) setPartnerState(remote);
+    });
+  };
 
   const displayMyName = myRole === 'husband' ? (myName || 'امیرمحمد') : (myName || 'آرمیتا');
   const displayPartnerName =
@@ -667,13 +689,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => {
-                      setMyRole('husband');
-                      setMyName('امیرمحمد');
-                      setMyEmail('am.moradidaem@gmail.com');
-                      setPartnerName('آرمیتا');
-                      setPartnerEmail('amirtaplans@gmail.com');
-                    }}
+                    onClick={() => handleRoleQuickSwitch('husband')}
                     className={`py-2 px-3 rounded-xl font-bold transition-all cursor-pointer ${
                       myRole === 'husband'
                         ? 'neu-btn-primary'
@@ -684,13 +700,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      setMyRole('wife');
-                      setMyName('آرمیتا');
-                      setMyEmail('amirtaplans@gmail.com');
-                      setPartnerName('امیرمحمد');
-                      setPartnerEmail('am.moradidaem@gmail.com');
-                    }}
+                    onClick={() => handleRoleQuickSwitch('wife')}
                     className={`py-2 px-3 rounded-xl font-bold transition-all cursor-pointer ${
                       myRole === 'wife'
                         ? 'neu-btn-primary'
@@ -724,7 +734,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                   dir="ltr"
                 />
                 <span className="text-[10px] text-blue-600 dark:text-blue-400 block">
-                  با وارد کردن ایمیل شما، نام حساب به طور خودکار به «امیرمحمد» متصل می‌شود.
+                  با انتخاب نقش یا ورود ایمیل، هویت کاربری در تمام بخش‌های اپلیکیشن (سربرگ، تایمر و رقابت) بی‌درنگ همگام‌سازی می‌شود.
                 </span>
               </div>
 

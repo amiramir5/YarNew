@@ -31,7 +31,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onLoginSuccess,
 }) => {
-  const { user, session, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut } = useAuth();
+  const { user, session, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, switchUser } = useAuth();
   const currentCouple = getCoupleSettings();
 
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
@@ -59,6 +59,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   const handleSelectPreset = (target: 'husband' | 'wife') => {
+    switchUser(target);
     if (target === 'husband') {
       setEmail(HUSBAND_CONFIG.email);
       setName(HUSBAND_CONFIG.name);
@@ -71,7 +72,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setPassword('konkoor1404');
     }
     setErrorMessage('');
-    setSuccessMessage('');
+    setSuccessMessage(`حساب کاربری روی این دستگاه به «${target === 'husband' ? 'امیرمحمد' : 'آرمیتا'}» تغییر یافت.`);
+    setTimeout(() => {
+      setSuccessMessage('');
+    }, 2000);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {

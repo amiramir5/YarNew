@@ -4,6 +4,7 @@ import {
   getCoupleSettings,
   saveCoupleSettings,
   resolveNameFromEmail,
+  broadcastMyState,
   HUSBAND_CONFIG,
   WIFE_CONFIG,
 } from './coupleSync';
@@ -101,8 +102,25 @@ export function initAuthListener(): () => void {
     }
   );
 
+  const handleProfileSwitched = (e: any) => {
+    const detail = e?.detail;
+    if (detail) {
+      globalAuthState.role = detail.role || globalAuthState.role;
+      globalAuthState.name = detail.name || globalAuthState.name;
+      globalAuthState.email = detail.email || globalAuthState.email;
+      notifyListeners();
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('konkoor_profile_switched', handleProfileSwitched);
+  }
+
   return () => {
     authSubscription?.subscription?.unsubscribe?.();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('konkoor_profile_switched', handleProfileSwitched);
+    }
   };
 }
 
@@ -374,7 +392,16 @@ function applyOfflineSession(
   notifyListeners();
 }
 
-function translateSupabaseAuthError(msg: string): string {
+export function switchActiveUser(targetRole: 'husband' | 'wife'): void {
+  const targetEmail = targetRole === 'husband' ? HUSBAND_CONFIG.email : WIFE_CONFIG.email;
+  const targetName = targetRole === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name;
+  applyOfflineSession(targetEmail, targetName, targetRole);
+  try {
+    broadcastMyState({ isStudying: false, sessionElapsedSeconds: 0 });
+  } catch {}
+}
+
+export function translateSupabaseAuthError(msg: string): string {
   if (!msg) return 'خطایی در احراز هویت رخ داد.';
   if (msg.includes('Password should be at least')) return 'رمز عبور باید حداقل ۶ کاراکتر باشد.';
   if (msg.includes('Invalid email')) return 'فرمت آدرس ایمیل نامعتبر است.';

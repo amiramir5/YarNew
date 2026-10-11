@@ -38,7 +38,7 @@ import {
   studyDayKey,
   addDays,
 } from './lib/jalali';
-import { LEITNER_DAYS } from './lib/constants';
+import { LEITNER_DAYS, getSubject } from './lib/constants';
 import { playSound, triggerHaptic } from './lib/audio';
 import {
   pushSessionToCloud,
@@ -46,6 +46,14 @@ import {
   pushMistakeToCloud,
   fetchCloudData,
 } from './lib/cloudSync';
+import {
+  broadcastMyState,
+  fetchRemotePartnerState,
+  subscribeToPartnerRealtime,
+  getStoredPartnerState,
+  savePartnerState,
+  CoupleMemberState,
+} from './lib/coupleSync';
 
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -96,6 +104,9 @@ export default function App() {
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
   const [accumulatedMs, setAccumulatedMs] = useState<number>(0);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+
+  // Global Partner Live State & Realtime
+  const [partnerLiveState, setPartnerLiveState] = useState<CoupleMemberState>(() => getStoredPartnerState());
 
   // Modals state
   const [cmdOpen, setCmdOpen] = useState(false);
@@ -187,6 +198,91 @@ export default function App() {
     });
   }, []);
 
+  // Partner Live State Sync & Realtime Subscription
+  useEffect(() => {
+    let isMounted = true;
+
+    // 1. Initial remote fetch from Supabase
+    fetchRemotePartnerState().then((remote) => {
+      if (remote && isMounted) {
+        setPartnerLiveState(remote);
+      }
+    });
+
+    // 2. Realtime channel subscription (broadcast & postgres changes)
+    const unsubscribe = subscribeToPartnerRealtime((incoming) => {
+      if (isMounted) {
+        setPartnerLiveState(incoming);
+      }
+    });
+
+    // 3. Fallback active polling every 3.5 seconds for resilient mobile sync
+    const pollInterval = setInterval(() => {
+      if (!isMounted) return;
+      fetchRemotePartnerState().then((remote) => {
+        if (remote && isMounted) {
+          setPartnerLiveState(remote);
+        }
+      });
+    }, 3500);
+
+    return () => {
+      isMounted = false;
+      unsubscribe();
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  // Smooth local second-by-second increment when partner is actively studying
+  useEffect(() => {
+    const tick = setInterval(() => {
+      setPartnerLiveState((prev) => {
+        if (!prev.isStudying) return prev;
+        const next = {
+          ...prev,
+          sessionElapsedSeconds: prev.sessionElapsedSeconds + 1,
+          todaySeconds: prev.todaySeconds + 1,
+          lastHeartbeat: Date.now(),
+        };
+        savePartnerState(next);
+        return next;
+      });
+    }, 1000);
+    return () => clearInterval(tick);
+  }, []);
+
+  // Listen to profile switch (Amir <-> Armita) to reload user data seamlessly
+  useEffect(() => {
+    const handleProfileSwitch = () => {
+      setSessions(loadSessions());
+      setExams(loadExams());
+      setMistakes(loadMistakes());
+      setPlans(loadPlans());
+      setNotes(loadNotes());
+      setProgressList(loadProgress());
+      setChecklist(loadChecklist());
+      fetchRemotePartnerState().then((remote) => {
+        if (remote) setPartnerLiveState(remote);
+      });
+    };
+
+    window.addEventListener('konkoor_profile_switched', handleProfileSwitch);
+    return () => window.removeEventListener('konkoor_profile_switched', handleProfileSwitch);
+  }, []);
+
+  // Helper to calculate current user's today study statistics
+  const getTodayOwnStats = () => {
+    const todayKey = studyDayKey();
+    const todaySessions = (sessions || []).filter((s) => s && !s.deleted_at && s.day === todayKey);
+    const completedSecs = todaySessions.reduce((acc, s) => acc + (s.seconds || 0), 0);
+    const totalSecs = completedSecs + (isTimerRunning ? elapsedSeconds : 0);
+    const totalTests = todaySessions.reduce(
+      (acc, s) => acc + (s.correct || 0) + (s.wrong || 0) + (s.blank || 0),
+      0
+    );
+    return { totalSecs, totalTests };
+  };
+
   // Timer Tick Interval
   useEffect(() => {
     let interval: any = null;
@@ -198,6 +294,25 @@ export default function App() {
     }
     return () => clearInterval(interval);
   }, [isTimerRunning, timerStartedAt, accumulatedMs]);
+
+  // Periodic heartbeat broadcast to Supabase Realtime every 3 seconds while timer is active
+  useEffect(() => {
+    if (!isTimerRunning) return;
+
+    const heartbeatTimer = setInterval(() => {
+      const stats = getTodayOwnStats();
+      broadcastMyState({
+        isStudying: true,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        sessionElapsedSeconds: elapsedSeconds,
+        todaySeconds: stats.totalSecs,
+        todayTests: stats.totalTests,
+      });
+    }, 3000);
+
+    return () => clearInterval(heartbeatTimer);
+  }, [isTimerRunning, elapsedSeconds, activeSubject, sessions]);
 
   // Persist timer state to storage whenever it changes
   useEffect(() => {
@@ -215,29 +330,60 @@ export default function App() {
     }
   }, [isTimerRunning, isTimerPaused, timerStartedAt, accumulatedMs, activeSubject]);
 
-  // Timer control handlers
+  // Timer control handlers with immediate Supabase broadcast
   const handleStartTimer = () => {
     const now = Date.now();
     setTimerStartedAt(now);
     setIsTimerRunning(true);
     setIsTimerPaused(false);
+
+    const stats = getTodayOwnStats();
+    broadcastMyState({
+      isStudying: true,
+      subject: activeSubject,
+      subjectName: getSubject(activeSubject).name,
+      sessionElapsedSeconds: 0,
+      todaySeconds: stats.totalSecs,
+      todayTests: stats.totalTests,
+    });
   };
 
   const handlePauseTimer = () => {
     if (!timerStartedAt) return;
     const additional = Date.now() - timerStartedAt;
     const newAccum = accumulatedMs + additional;
+    const newElapsed = Math.floor(newAccum / 1000);
     setAccumulatedMs(newAccum);
     setTimerStartedAt(null);
     setIsTimerRunning(false);
     setIsTimerPaused(true);
-    setElapsedSeconds(Math.floor(newAccum / 1000));
+    setElapsedSeconds(newElapsed);
+
+    const stats = getTodayOwnStats();
+    broadcastMyState({
+      isStudying: false,
+      subject: activeSubject,
+      subjectName: getSubject(activeSubject).name,
+      sessionElapsedSeconds: newElapsed,
+      todaySeconds: stats.totalSecs,
+      todayTests: stats.totalTests,
+    });
   };
 
   const handleResumeTimer = () => {
     setTimerStartedAt(Date.now());
     setIsTimerRunning(true);
     setIsTimerPaused(false);
+
+    const stats = getTodayOwnStats();
+    broadcastMyState({
+      isStudying: true,
+      subject: activeSubject,
+      subjectName: getSubject(activeSubject).name,
+      sessionElapsedSeconds: elapsedSeconds,
+      todaySeconds: stats.totalSecs,
+      todayTests: stats.totalTests,
+    });
   };
 
   const handleResetTimer = () => {
@@ -247,6 +393,16 @@ export default function App() {
     setAccumulatedMs(0);
     setElapsedSeconds(0);
     saveTimerState(null);
+
+    const stats = getTodayOwnStats();
+    broadcastMyState({
+      isStudying: false,
+      subject: activeSubject,
+      subjectName: getSubject(activeSubject).name,
+      sessionElapsedSeconds: 0,
+      todaySeconds: stats.totalSecs,
+      todayTests: stats.totalTests,
+    });
   };
 
   const handleFinishTimer = () => {
@@ -272,6 +428,24 @@ export default function App() {
     handleResetTimer();
     setFinishSessionOpen(false);
     setActiveView('home');
+
+    // Broadcast new updated today totals after finishing session
+    const todayKey = studyDayKey();
+    const todayUpdated = updated.filter((s) => s && !s.deleted_at && s.day === todayKey);
+    const newTotalSecs = todayUpdated.reduce((acc, s) => acc + (s.seconds || 0), 0);
+    const newTotalTests = todayUpdated.reduce(
+      (acc, s) => acc + (s.correct || 0) + (s.wrong || 0) + (s.blank || 0),
+      0
+    );
+
+    broadcastMyState({
+      isStudying: false,
+      subject: activeSubject,
+      subjectName: getSubject(activeSubject).name,
+      sessionElapsedSeconds: 0,
+      todaySeconds: newTotalSecs,
+      todayTests: newTotalTests,
+    });
   };
 
   // Data Actions
@@ -518,6 +692,7 @@ export default function App() {
               liveTimerSeconds={elapsedSeconds}
               isTimerRunning={isTimerRunning}
               activeTimerSubject={activeSubject}
+              partnerState={partnerLiveState}
               onNavigate={setActiveView}
               onOpenQuickSessionModal={() => setManualSessionOpen(true)}
               onEditExamDate={() => {
@@ -540,6 +715,8 @@ export default function App() {
               vibrationEnabled={settings.vibrationEnabled}
               theme={settings.theme}
               sessions={sessions}
+              partnerState={partnerLiveState}
+              onNavigate={setActiveView}
               onSelectSubject={setActiveSubject}
               onSelectBook={setActiveBook}
               onSelectChapter={setActiveChapter}

@@ -1,4 +1,4 @@
-import { getSupabaseClient, getSupabaseConfig } from './supabase';
+import { getSupabaseClient } from './supabase';
 import { studyDayKey } from './jalali';
 
 export interface CoupleMemberState {
@@ -81,22 +81,31 @@ export function getCoupleSettings() {
     localStorage.getItem(STORAGE_KEYS.PARTNER_EMAIL) ||
     (role === 'husband' ? WIFE_CONFIG.email : HUSBAND_CONFIG.email);
 
-  // Smart resolution from email if stored name is default or empty
   const storedMyName = localStorage.getItem(STORAGE_KEYS.MY_NAME);
-  const myName =
-    storedMyName && storedMyName !== 'من' && storedMyName !== 'همسر ۱' && storedMyName !== 'همسر ۲'
-      ? storedMyName
-      : (role === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name);
-
   const storedPartnerName = localStorage.getItem(STORAGE_KEYS.PARTNER_NAME);
-  const partnerName =
-    storedPartnerName &&
-    storedPartnerName !== 'همسرم' &&
-    storedPartnerName !== 'همسر ۲' &&
-    storedPartnerName !== 'همسر ۱' &&
-    storedPartnerName !== 'من'
-      ? storedPartnerName
-      : (role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name);
+
+  // Guarantee that myName and partnerName never collide
+  let myName = role === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name;
+  if (storedMyName && storedMyName !== 'من' && storedMyName !== 'همسر ۱' && storedMyName !== 'همسر ۲') {
+    if (role === 'husband' && storedMyName !== WIFE_CONFIG.name) {
+      myName = storedMyName;
+    } else if (role === 'wife' && storedMyName !== HUSBAND_CONFIG.name) {
+      myName = storedMyName;
+    }
+  }
+
+  let partnerName = role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name;
+  if (storedPartnerName && storedPartnerName !== 'همسرم' && storedPartnerName !== 'همسر ۲' && storedPartnerName !== 'همسر ۱') {
+    if (role === 'husband' && storedPartnerName !== HUSBAND_CONFIG.name) {
+      partnerName = storedPartnerName;
+    } else if (role === 'wife' && storedPartnerName !== WIFE_CONFIG.name) {
+      partnerName = storedPartnerName;
+    }
+  }
+
+  if (myName === partnerName) {
+    partnerName = role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name;
+  }
 
   const simulationEnabled = localStorage.getItem(STORAGE_KEYS.SIMULATION_ENABLED) !== 'false';
 
@@ -113,23 +122,174 @@ export function saveCoupleSettings(settings: {
   simulationEnabled?: boolean;
 }) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEYS.ROLE, settings.myRole);
-  localStorage.setItem(STORAGE_KEYS.PAIR_CODE, settings.pairCode || DEFAULT_PAIR_CODE);
-  localStorage.setItem(STORAGE_KEYS.MY_NAME, settings.myName);
-  localStorage.setItem(STORAGE_KEYS.PARTNER_NAME, settings.partnerName);
-  if (settings.myEmail !== undefined) {
-    localStorage.setItem(STORAGE_KEYS.MY_EMAIL, settings.myEmail);
+
+  const role = settings.myRole;
+  const code = settings.pairCode || DEFAULT_PAIR_CODE;
+  let myName = settings.myName.trim() || (role === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name);
+  let partnerName = settings.partnerName.trim() || (role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name);
+
+  if (myName === partnerName) {
+    partnerName = role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name;
   }
-  if (settings.partnerEmail !== undefined) {
-    localStorage.setItem(STORAGE_KEYS.PARTNER_EMAIL, settings.partnerEmail);
-  }
+
+  const myEmail =
+    settings.myEmail !== undefined && settings.myEmail.trim()
+      ? settings.myEmail.trim()
+      : role === 'husband'
+      ? HUSBAND_CONFIG.email
+      : WIFE_CONFIG.email;
+
+  const partnerEmail =
+    settings.partnerEmail !== undefined && settings.partnerEmail.trim()
+      ? settings.partnerEmail.trim()
+      : role === 'husband'
+      ? WIFE_CONFIG.email
+      : HUSBAND_CONFIG.email;
+
+  localStorage.setItem(STORAGE_KEYS.ROLE, role);
+  localStorage.setItem(STORAGE_KEYS.PAIR_CODE, code);
+  localStorage.setItem(STORAGE_KEYS.MY_NAME, myName);
+  localStorage.setItem(STORAGE_KEYS.PARTNER_NAME, partnerName);
+  localStorage.setItem(STORAGE_KEYS.MY_EMAIL, myEmail);
+  localStorage.setItem(STORAGE_KEYS.PARTNER_EMAIL, partnerEmail);
+
   if (settings.simulationEnabled !== undefined) {
     localStorage.setItem(STORAGE_KEYS.SIMULATION_ENABLED, String(settings.simulationEnabled));
   }
+
+  // Also sync user auth cache in localStorage so getActiveUserEmail() matches instantly!
+  try {
+    localStorage.setItem(
+      'ky_authenticated_user_v2',
+      JSON.stringify({
+        email: myEmail,
+        name: myName,
+        role,
+        id: role === 'husband' ? 'user-amir' : 'user-armita',
+        savedAt: Date.now(),
+      })
+    );
+  } catch {}
+
+  // Dispatch global window event so any open view re-syncs
+  try {
+    window.dispatchEvent(
+      new CustomEvent('konkoor_profile_switched', {
+        detail: { role, name: myName, email: myEmail, partnerName, partnerEmail },
+      })
+    );
+  } catch {}
 }
 
 /**
- * Broadcast my live study status to Supabase Realtime channel and table
+ * Singleton Managed Realtime Channel
+ */
+let sharedPairChannel: any = null;
+let currentPairCodeForChannel: string = '';
+const realtimeSubscribers = new Set<(state: CoupleMemberState) => void>();
+
+function getOrCreatePairChannel(pairCode: string): any {
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  if (sharedPairChannel && currentPairCodeForChannel === pairCode) {
+    return sharedPairChannel;
+  }
+
+  if (sharedPairChannel) {
+    try {
+      supabase.removeChannel(sharedPairChannel);
+    } catch {}
+    sharedPairChannel = null;
+  }
+
+  currentPairCodeForChannel = pairCode;
+  const channel = supabase.channel(`couple-live-${pairCode}`, {
+    config: {
+      broadcast: { self: false, ack: false },
+    },
+  });
+
+  channel
+    .on('broadcast', { event: 'timer_heartbeat' }, (event: any) => {
+      const payload = event?.payload;
+      if (!payload) return;
+      const settings = getCoupleSettings();
+      const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
+      if (payload.role === partnerRole) {
+        const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
+        const updatedState: CoupleMemberState = {
+          role: partnerRole,
+          name: payload.name || settings.partnerName,
+          avatar: '3d-badge',
+          isStudying: Boolean(payload.isStudying),
+          online: true,
+          subject: payload.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
+          subjectName: payload.subjectName || defaultSubject,
+          sessionElapsedSeconds: Number(payload.sessionElapsedSeconds) || 0,
+          todaySeconds: Number(payload.todaySeconds) || 0,
+          todayTests: Number(payload.todayTests) || 0,
+          studyDay: payload.studyDay || studyDayKey(),
+          lastHeartbeat: Date.now(),
+        };
+        savePartnerState(updatedState);
+        realtimeSubscribers.forEach((cb) => cb(updatedState));
+      }
+    })
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'couple_live_states',
+        filter: `pair_code=eq.${pairCode}`,
+      },
+      (payload: any) => {
+        const row = payload.new;
+        if (!row) return;
+        const settings = getCoupleSettings();
+        const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
+        if (row.role === partnerRole) {
+          const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
+          const updatedAtMs = new Date(row.updated_at || Date.now()).getTime();
+          const isStale = Date.now() - updatedAtMs > 45000;
+          const isStudying = Boolean(row.is_studying) && !isStale;
+
+          let liveSession = Number(row.session_elapsed_seconds) || 0;
+          let liveToday = Number(row.today_seconds) || 0;
+          if (isStudying && !isStale) {
+            const extra = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000));
+            liveSession += extra;
+            liveToday += extra;
+          }
+
+          const updatedState: CoupleMemberState = {
+            role: partnerRole,
+            name: row.display_name || settings.partnerName,
+            avatar: '3d-badge',
+            isStudying,
+            online: isStale ? false : Boolean(row.online),
+            subject: row.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
+            subjectName: row.subject_name || defaultSubject,
+            sessionElapsedSeconds: liveSession,
+            todaySeconds: liveToday,
+            todayTests: Number(row.today_tests) || 0,
+            studyDay: row.study_day || studyDayKey(),
+            lastHeartbeat: updatedAtMs,
+          };
+          savePartnerState(updatedState);
+          realtimeSubscribers.forEach((cb) => cb(updatedState));
+        }
+      }
+    )
+    .subscribe();
+
+  sharedPairChannel = channel;
+  return channel;
+}
+
+/**
+ * Broadcast my live study status to Supabase Realtime channel and database table
  */
 export async function broadcastMyState(state: Partial<CoupleMemberState>): Promise<void> {
   const settings = getCoupleSettings();
@@ -139,7 +299,7 @@ export async function broadcastMyState(state: Partial<CoupleMemberState>): Promi
     role: settings.myRole,
     name: settings.myName,
     avatar: '3d-badge',
-    isStudying: state.isStudying || false,
+    isStudying: Boolean(state.isStudying),
     online: true,
     subject: state.subject || 'bio',
     subjectName: state.subjectName || 'زیست‌شناسی',
@@ -150,23 +310,28 @@ export async function broadcastMyState(state: Partial<CoupleMemberState>): Promi
     lastHeartbeat: Date.now(),
   };
 
-  // 1. Try Supabase Broadcast channel & DB upsert
   try {
     const supabase = getSupabaseClient();
     if (supabase) {
-      const room = supabase.channel(`couple-live-${settings.pairCode}`);
-      await room.send({
-        type: 'broadcast',
-        event: 'timer_heartbeat',
-        payload: fullState,
-      });
+      // 1. Send Realtime broadcast
+      const channel = getOrCreatePairChannel(settings.pairCode);
+      if (channel) {
+        try {
+          channel.send({
+            type: 'broadcast',
+            event: 'timer_heartbeat',
+            payload: fullState,
+          });
+        } catch {}
+      }
 
-      // Also upsert to couple_live_states by pair_code and role
+      // 2. Persist in database table couple_live_states
       await supabase.from('couple_live_states').upsert(
         {
           pair_code: settings.pairCode,
           role: settings.myRole,
           display_name: settings.myName,
+          email: settings.myEmail,
           is_studying: fullState.isStudying,
           subject: fullState.subject,
           subject_name: fullState.subjectName,
@@ -180,13 +345,13 @@ export async function broadcastMyState(state: Partial<CoupleMemberState>): Promi
         { onConflict: 'pair_code,role' }
       );
     }
-  } catch {
-    // Non-blocking fallback
+  } catch (err) {
+    console.warn('broadcastMyState non-blocking notice:', err);
   }
 }
 
 /**
- * Fetch or get live partner state (with graceful offline fallback)
+ * Fetch or get live partner state from storage
  */
 export function getStoredPartnerState(): CoupleMemberState {
   const settings = getCoupleSettings();
@@ -215,7 +380,11 @@ export function getStoredPartnerState(): CoupleMemberState {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.studyDay === studyDayKey()) {
-        return parsed;
+        return {
+          ...parsed,
+          role: partnerRole,
+          name: parsed.name && parsed.name !== settings.myName ? parsed.name : settings.partnerName,
+        };
       }
     }
   } catch {
@@ -244,7 +413,7 @@ export function savePartnerState(state: CoupleMemberState) {
 }
 
 /**
- * Fetch the latest partner live record from Supabase table
+ * Fetch the latest partner live record from Supabase table with real-time time compensation
  */
 export async function fetchRemotePartnerState(): Promise<CoupleMemberState | null> {
   const settings = getCoupleSettings();
@@ -264,19 +433,38 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
 
     if (error || !data) return null;
 
+    const updatedAtMs = new Date(data.updated_at || Date.now()).getTime();
+    const isStale = Date.now() - updatedAtMs > 45000;
+    const isStudying = Boolean(data.is_studying) && !isStale;
+
+    let liveSession = Number(data.session_elapsed_seconds) || 0;
+    let liveToday = Number(data.today_seconds) || 0;
+
+    // Compensate for elapsed seconds since last database heartbeat if actively studying
+    if (isStudying && !isStale) {
+      const extraSeconds = Math.max(0, Math.floor((Date.now() - updatedAtMs) / 1000));
+      liveSession += extraSeconds;
+      liveToday += extraSeconds;
+    }
+
+    const partnerName =
+      data.display_name && data.display_name !== settings.myName
+        ? data.display_name
+        : settings.partnerName;
+
     const partnerState: CoupleMemberState = {
       role: partnerRole,
-      name: data.display_name || settings.partnerName,
+      name: partnerName,
       avatar: '3d-badge',
-      isStudying: Boolean(data.is_studying),
-      online: Boolean(data.online),
+      isStudying,
+      online: isStale ? false : Boolean(data.online),
       subject: data.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
       subjectName: data.subject_name || defaultSubject,
-      sessionElapsedSeconds: Number(data.session_elapsed_seconds) || 0,
-      todaySeconds: Number(data.today_seconds) || 0,
+      sessionElapsedSeconds: liveSession,
+      todaySeconds: liveToday,
       todayTests: Number(data.today_tests) || 0,
       studyDay: data.study_day || studyDayKey(),
-      lastHeartbeat: new Date(data.updated_at || Date.now()).getTime(),
+      lastHeartbeat: updatedAtMs,
     };
 
     savePartnerState(partnerState);
@@ -291,76 +479,12 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
  */
 export function subscribeToPartnerRealtime(onPartnerUpdate: (state: CoupleMemberState) => void): () => void {
   const settings = getCoupleSettings();
-  const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
-  const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
+  realtimeSubscribers.add(onPartnerUpdate);
 
-  try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return () => {};
+  // Initialize singleton channel
+  getOrCreatePairChannel(settings.pairCode);
 
-    const channel = supabase
-      .channel(`couple-live-${settings.pairCode}`)
-      .on('broadcast', { event: 'timer_heartbeat' }, (event: any) => {
-        const payload = event?.payload;
-        if (payload && payload.role === partnerRole) {
-          const updatedState: CoupleMemberState = {
-            role: partnerRole,
-            name: payload.name || settings.partnerName,
-            avatar: '3d-badge',
-            isStudying: Boolean(payload.isStudying),
-            online: true,
-            subject: payload.subject || 'bio',
-            subjectName: payload.subjectName || defaultSubject,
-            sessionElapsedSeconds: Number(payload.sessionElapsedSeconds) || 0,
-            todaySeconds: Number(payload.todaySeconds) || 0,
-            todayTests: Number(payload.todayTests) || 0,
-            studyDay: payload.studyDay || studyDayKey(),
-            lastHeartbeat: Date.now(),
-          };
-          savePartnerState(updatedState);
-          onPartnerUpdate(updatedState);
-        }
-      })
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'couple_live_states',
-          filter: `pair_code=eq.${settings.pairCode}`,
-        },
-        (payload: any) => {
-          const row = payload.new;
-          if (row && row.role === partnerRole) {
-            const updatedState: CoupleMemberState = {
-              role: partnerRole,
-              name: row.display_name || settings.partnerName,
-              avatar: '3d-badge',
-              isStudying: Boolean(row.is_studying),
-              online: Boolean(row.online),
-              subject: row.subject || 'bio',
-              subjectName: row.subject_name || defaultSubject,
-              sessionElapsedSeconds: Number(row.session_elapsed_seconds) || 0,
-              todaySeconds: Number(row.today_seconds) || 0,
-              todayTests: Number(row.today_tests) || 0,
-              studyDay: row.study_day || studyDayKey(),
-              lastHeartbeat: new Date(row.updated_at || Date.now()).getTime(),
-            };
-            savePartnerState(updatedState);
-            onPartnerUpdate(updatedState);
-          }
-        }
-      )
-      .subscribe();
-
-    return () => {
-      try {
-        supabase.removeChannel(channel);
-      } catch {
-        // ignore
-      }
-    };
-  } catch {
-    return () => {};
-  }
+  return () => {
+    realtimeSubscribers.delete(onPartnerUpdate);
+  };
 }

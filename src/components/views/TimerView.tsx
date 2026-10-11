@@ -12,6 +12,7 @@ import {
   BookOpen,
   Layers,
   AlertCircle,
+  Heart,
 } from 'lucide-react';
 import {
   SUBJECTS,
@@ -26,7 +27,8 @@ import { fmtClock, faNum } from '../../lib/jalali';
 import { playSound, triggerHaptic } from '../../lib/audio';
 import { Subject3DIcon } from '../common/Subject3DIcon';
 import { StudyDistributionPieChart } from '../common/StudyDistributionPieChart';
-import { Session } from '../../types';
+import { Session, ViewId } from '../../types';
+import { CoupleMemberState } from '../../lib/coupleSync';
 
 interface TimerViewProps {
   elapsedSeconds: number;
@@ -40,6 +42,8 @@ interface TimerViewProps {
   vibrationEnabled: boolean;
   theme?: 'light' | 'dark';
   sessions?: Session[];
+  partnerState?: CoupleMemberState;
+  onNavigate?: (view: ViewId) => void;
   onSelectSubject: (subjId: string) => void;
   onSelectBook?: (book: string) => void;
   onSelectChapter?: (chapter: string) => void;
@@ -64,6 +68,8 @@ export const TimerView: React.FC<TimerViewProps> = ({
   vibrationEnabled,
   theme,
   sessions = [],
+  partnerState,
+  onNavigate,
   onSelectSubject,
   onSelectBook,
   onSelectChapter,
@@ -290,6 +296,59 @@ export const TimerView: React.FC<TimerViewProps> = ({
               <span>ثبت دستی جلسه</span>
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Live Duo Partner Status Banner (shown in normal mode) */}
+      {!isZenMode && partnerState && (
+        <div className="p-3 sm:p-3.5 rounded-2xl bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-sky-50/70 dark:from-blue-950/40 dark:via-indigo-950/30 dark:to-sky-950/40 border border-blue-200/80 dark:border-blue-900/60 flex items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="relative shrink-0">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-700 text-white flex items-center justify-center font-black text-xs shadow-sm">
+                {partnerState.name ? partnerState.name.slice(0, 1) : 'ی'}
+              </div>
+              <span
+                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full ring-2 ring-white dark:ring-slate-900 ${
+                  partnerState.isStudying ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'
+                }`}
+              />
+            </div>
+
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-extrabold text-slate-900 dark:text-white">
+                  {partnerState.name || 'همسرم'}
+                </span>
+                <span
+                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                    partnerState.isStudying
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
+                      : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+                  }`}
+                >
+                  {partnerState.isStudying ? 'در حال مطالعه زنده' : 'استراحت / آماده پارت'}
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                {partnerState.isStudying
+                  ? `درس جاری: ${partnerState.subjectName} (${fmtClock(partnerState.sessionElapsedSeconds)}) • مطالعه امروز: ${Math.round(partnerState.todaySeconds / 60)} دقیقه`
+                  : `مجموع مطالعه امروز همسر: ${Math.round(partnerState.todaySeconds / 60)} دقیقه`}
+              </p>
+            </div>
+          </div>
+
+          {onNavigate && (
+            <button
+              type="button"
+              onClick={() => onNavigate('couple')}
+              className="px-2.5 py-1.5 rounded-xl neu-raised-sm hover:border-blue-500 text-blue-700 dark:text-blue-300 text-[11px] font-extrabold flex items-center gap-1 shrink-0 cursor-pointer transition-all"
+              title="مشاهده رقابت زنده دونفره"
+            >
+              <Heart className="w-3.5 h-3.5 text-blue-600 fill-blue-600" />
+              <span className="hidden sm:inline">رقابت دونفره</span>
+            </button>
+          )}
         </div>
       )}
 
