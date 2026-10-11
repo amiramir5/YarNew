@@ -30,6 +30,7 @@ import {
   loadTimerState,
   saveTimerState,
   exportAllDataJson,
+  getActiveUserEmail,
   uid,
 } from './lib/storage';
 import {
@@ -404,15 +405,39 @@ export default function App() {
     }
   };
 
-  const handleRefreshData = () => {
-    setSessions(loadSessions());
-    setExams(loadExams());
-    setMistakes(loadMistakes());
-    setPlans(loadPlans());
-    setNotes(loadNotes());
-    setProgressList(loadProgress());
+  const handleRefreshData = (targetEmail?: string) => {
+    const email = targetEmail || getActiveUserEmail();
+    setSessions(loadSessions(email));
+    setExams(loadExams(email));
+    setMistakes(loadMistakes(email));
+    setPlans(loadPlans(email));
+    setNotes(loadNotes(email));
+    setProgressList(loadProgress(email));
     setChecklist(loadChecklist());
     setSettings(loadSettings());
+
+    // Also pull latest records from Supabase for this account
+    if (email) {
+      fetchCloudData(email).then((remote) => {
+        if (!remote) return;
+        if (remote.sessions && remote.sessions.length > 0) {
+          setSessions(remote.sessions);
+          saveSessions(remote.sessions, email);
+        }
+        if (remote.exams && remote.exams.length > 0) {
+          setExams(remote.exams);
+          saveExams(remote.exams, email);
+        }
+        if (remote.mistakes && remote.mistakes.length > 0) {
+          setMistakes(remote.mistakes);
+          saveMistakes(remote.mistakes, email);
+        }
+        if (remote.plans && remote.plans.length > 0) {
+          setPlans(remote.plans);
+          savePlans(remote.plans, email);
+        }
+      });
+    }
   };
 
   // Launch AI Quiz Runner

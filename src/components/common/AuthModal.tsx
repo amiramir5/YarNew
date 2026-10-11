@@ -6,6 +6,7 @@ import {
   LogOut,
   CheckCircle2,
   ShieldCheck,
+  Shield,
   User,
   Sparkles,
   AlertCircle,
@@ -208,7 +209,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <p className="font-black text-slate-900 dark:text-white">امیرمحمد</p>
                 <p className="text-[10px] text-slate-500 font-mono truncate">am.moradidaem</p>
               </div>
-              <span className="text-xl">👨🏻‍🎓</span>
+              <div className="p-2 rounded-xl bg-blue-100/70 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400">
+                <Shield className="w-4 h-4" />
+              </div>
             </button>
 
             <button
@@ -224,7 +227,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <p className="font-black text-slate-900 dark:text-white">آرمیتا</p>
                 <p className="text-[10px] text-slate-500 font-mono truncate">amirtaplans</p>
               </div>
-              <span className="text-xl">👩🏻‍🎓</span>
+              <div className="p-2 rounded-xl bg-sky-100/70 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400">
+                <Sparkles className="w-4 h-4" />
+              </div>
             </button>
           </div>
         </div>

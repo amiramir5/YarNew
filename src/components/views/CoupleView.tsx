@@ -77,6 +77,23 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
   const [partnerState, setPartnerState] = useState<CoupleMemberState>(() => getStoredPartnerState());
   const [isSyncing, setIsSyncing] = useState(false);
 
+  // Sync state whenever settings change
+  useEffect(() => {
+    const cur = getCoupleSettings();
+    setMyRole(cur.myRole);
+    setMyEmail(cur.myEmail || '');
+    setPartnerEmail(cur.partnerEmail || '');
+    setPairCode(cur.pairCode);
+    setMyName(cur.myName);
+    setPartnerName(cur.partnerName);
+  }, []);
+
+  const displayMyName = myRole === 'husband' ? (myName || 'امیرمحمد') : (myName || 'آرمیتا');
+  const displayPartnerName =
+    myRole === 'husband'
+      ? (partnerName && partnerName !== displayMyName ? partnerName : 'آرمیتا')
+      : (partnerName && partnerName !== displayMyName ? partnerName : 'امیرمحمد');
+
   // Supabase status
   const [sbStatus, setSbStatus] = useState<string | null>(null);
 
@@ -340,7 +357,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                   <Avatar3DBadge role={myRole} size="md" isStudying={isTimerRunning} />
                   <div className="min-w-0">
                     <span className="font-extrabold text-sm text-slate-900 dark:text-white block truncate">
-                      {myName}
+                      {displayMyName}
                     </span>
                     <span className="text-[11px] text-slate-400 block truncate">
                       {isTimerRunning ? 'در حال مطالعه روی این دستگاه' : 'تایمر در حالت توقف'}
@@ -403,7 +420,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                   <Avatar3DBadge role={myRole === 'husband' ? 'wife' : 'husband'} size="md" isStudying={partnerState.isStudying} />
                   <div className="min-w-0">
                     <span className="font-extrabold text-sm text-slate-900 dark:text-white block truncate">
-                      {partnerName}
+                      {displayPartnerName}
                     </span>
                     <span className="text-[11px] text-slate-400 block truncate">
                       {partnerState.isStudying ? `در حال مطالعه ${partnerState.subjectName}` : 'آنلاین و آماده'}

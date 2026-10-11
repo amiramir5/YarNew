@@ -102,9 +102,9 @@ export async function pushMistakeToCloud(card: MistakeCard): Promise<void> {
 }
 
 /**
- * Pull all data from Supabase for this pairCode and merge with local
+ * Pull all data from Supabase for this user (or pairCode) and merge with local
  */
-export async function fetchCloudData(): Promise<{
+export async function fetchCloudData(customEmail?: string): Promise<{
   sessions?: Session[];
   exams?: Exam[];
   mistakes?: MistakeCard[];
@@ -114,13 +114,31 @@ export async function fetchCloudData(): Promise<{
     const supabase = getSupabaseClient();
     if (!supabase) return null;
 
-    const { pairCode } = getCoupleSettings();
+    const { pairCode, myEmail } = getCoupleSettings();
+    const targetEmail = (customEmail || myEmail || '').trim().toLowerCase();
+
+    let sQuery = supabase.from('sessions').select('*');
+    let eQuery = supabase.from('exams').select('*');
+    let mQuery = supabase.from('mistakes').select('*');
+    let pQuery = supabase.from('daily_plans').select('*');
+
+    if (targetEmail) {
+      sQuery = sQuery.eq('user_email', targetEmail);
+      eQuery = eQuery.eq('user_email', targetEmail);
+      mQuery = mQuery.eq('user_email', targetEmail);
+      pQuery = pQuery.eq('user_email', targetEmail);
+    } else {
+      sQuery = sQuery.eq('pair_code', pairCode);
+      eQuery = eQuery.eq('pair_code', pairCode);
+      mQuery = mQuery.eq('pair_code', pairCode);
+      pQuery = pQuery.eq('pair_code', pairCode);
+    }
 
     const [sessionsRes, examsRes, mistakesRes, plansRes] = await Promise.all([
-      supabase.from('sessions').select('*').eq('pair_code', pairCode).limit(500),
-      supabase.from('exams').select('*').eq('pair_code', pairCode).limit(200),
-      supabase.from('mistakes').select('*').eq('pair_code', pairCode).limit(300),
-      supabase.from('daily_plans').select('*').eq('pair_code', pairCode).limit(50),
+      sQuery.limit(500),
+      eQuery.limit(200),
+      mQuery.limit(300),
+      pQuery.limit(50),
     ]);
 
     return {
@@ -132,6 +150,25 @@ export async function fetchCloudData(): Promise<{
   } catch (err) {
     console.warn('Failed to fetch cloud records:', err);
     return null;
+  }
+}
+
+/**
+ * Fetch partner's sessions specifically for couple comparison charts
+ */
+export async function fetchPartnerSessions(pairCode: string, partnerEmail: string): Promise<Session[]> {
+  try {
+    const supabase = getSupabaseClient();
+    if (!supabase || !partnerEmail) return [];
+    const { data } = await supabase
+      .from('sessions')
+      .select('*')
+      .eq('pair_code', pairCode)
+      .eq('user_email', partnerEmail.trim().toLowerCase())
+      .limit(500);
+    return data || [];
+  } catch {
+    return [];
   }
 }
 

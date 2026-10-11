@@ -50,6 +50,29 @@ export function getDefaultSettings(): AppSettings {
   };
 }
 
+// Active user scoping helper
+export function getActiveUserEmail(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const raw = localStorage.getItem('ky_authenticated_user_v2');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.email) return parsed.email.trim().toLowerCase();
+    }
+    const coupleRaw = localStorage.getItem('ky_couple_my_email_v4');
+    if (coupleRaw) return coupleRaw.trim().toLowerCase();
+  } catch {}
+  return '';
+}
+
+export function getUserScopedKey(baseKey: string, customEmail?: string): string {
+  const email = customEmail !== undefined ? customEmail.trim().toLowerCase() : getActiveUserEmail();
+  if (!email) return baseKey;
+  // Sanitize key
+  const safe = email.replace(/[^a-zA-Z0-9_@.-]/g, '_');
+  return `${baseKey}__${safe}`;
+}
+
 // Local Storage Wrappers with Safe JSON Parse
 export function getStored<T>(key: string, defaultValue: T): T {
   if (typeof window === 'undefined') return defaultValue;
@@ -72,47 +95,105 @@ export function setStored<T>(key: string, value: T): void {
   }
 }
 
-// Specific Getters & Setters
-export function loadSessions(): Session[] {
-  return getStored<Session[]>(STORAGE_KEYS.SESSIONS, []);
+// Specific Getters & Setters with User Scoping
+export function loadSessions(customEmail?: string): Session[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.SESSIONS, customEmail);
+  const data = getStored<Session[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  // Fallback to unscoped legacy key ONLY if it's the default/first user (Amir)
+  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
+  if (!email || email.includes('amir') || email.includes('moradi')) {
+    const legacy = getStored<Session[]>(STORAGE_KEYS.SESSIONS, []);
+    if (legacy.length > 0) {
+      // Migrate legacy sessions to Amir's scoped key
+      setStored(scopedKey, legacy);
+      return legacy;
+    }
+  }
+  return [];
 }
-export function saveSessions(sessions: Session[]): void {
-  setStored(STORAGE_KEYS.SESSIONS, sessions);
+export function saveSessions(sessions: Session[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.SESSIONS, customEmail);
+  setStored(scopedKey, sessions);
 }
 
-export function loadExams(): Exam[] {
-  return getStored<Exam[]>(STORAGE_KEYS.EXAMS, []);
+export function loadExams(customEmail?: string): Exam[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.EXAMS, customEmail);
+  const data = getStored<Exam[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
+  if (!email || email.includes('amir') || email.includes('moradi')) {
+    const legacy = getStored<Exam[]>(STORAGE_KEYS.EXAMS, []);
+    if (legacy.length > 0) {
+      setStored(scopedKey, legacy);
+      return legacy;
+    }
+  }
+  return [];
 }
-export function saveExams(exams: Exam[]): void {
-  setStored(STORAGE_KEYS.EXAMS, exams);
+export function saveExams(exams: Exam[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.EXAMS, customEmail);
+  setStored(scopedKey, exams);
 }
 
-export function loadMistakes(): MistakeCard[] {
-  return getStored<MistakeCard[]>(STORAGE_KEYS.MISTAKES, []);
+export function loadMistakes(customEmail?: string): MistakeCard[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.MISTAKES, customEmail);
+  const data = getStored<MistakeCard[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
+  if (!email || email.includes('amir') || email.includes('moradi')) {
+    const legacy = getStored<MistakeCard[]>(STORAGE_KEYS.MISTAKES, []);
+    if (legacy.length > 0) {
+      setStored(scopedKey, legacy);
+      return legacy;
+    }
+  }
+  return [];
 }
-export function saveMistakes(mistakes: MistakeCard[]): void {
-  setStored(STORAGE_KEYS.MISTAKES, mistakes);
+export function saveMistakes(mistakes: MistakeCard[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.MISTAKES, customEmail);
+  setStored(scopedKey, mistakes);
 }
 
-export function loadPlans(): DailyPlan[] {
-  return getStored<DailyPlan[]>(STORAGE_KEYS.PLANS, []);
+export function loadPlans(customEmail?: string): DailyPlan[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.PLANS, customEmail);
+  const data = getStored<DailyPlan[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
+  if (!email || email.includes('amir') || email.includes('moradi')) {
+    const legacy = getStored<DailyPlan[]>(STORAGE_KEYS.PLANS, []);
+    if (legacy.length > 0) {
+      setStored(scopedKey, legacy);
+      return legacy;
+    }
+  }
+  return [];
 }
-export function savePlans(plans: DailyPlan[]): void {
-  setStored(STORAGE_KEYS.PLANS, plans);
+export function savePlans(plans: DailyPlan[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.PLANS, customEmail);
+  setStored(scopedKey, plans);
 }
 
-export function loadNotes(): QuickNote[] {
-  return getStored<QuickNote[]>(STORAGE_KEYS.NOTES, []);
+export function loadNotes(customEmail?: string): QuickNote[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.NOTES, customEmail);
+  return getStored<QuickNote[]>(scopedKey, []);
 }
-export function saveNotes(notes: QuickNote[]): void {
-  setStored(STORAGE_KEYS.NOTES, notes);
+export function saveNotes(notes: QuickNote[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.NOTES, customEmail);
+  setStored(scopedKey, notes);
 }
 
-export function loadProgress(): ProgressEntry[] {
-  return getStored<ProgressEntry[]>(STORAGE_KEYS.PROGRESS, []);
+export function loadProgress(customEmail?: string): ProgressEntry[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.PROGRESS, customEmail);
+  return getStored<ProgressEntry[]>(scopedKey, []);
 }
-export function saveProgress(progress: ProgressEntry[]): void {
-  setStored(STORAGE_KEYS.PROGRESS, progress);
+export function saveProgress(progress: ProgressEntry[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.PROGRESS, customEmail);
+  setStored(scopedKey, progress);
 }
 
 export function loadSettings(): AppSettings {

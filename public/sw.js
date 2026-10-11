@@ -1,10 +1,10 @@
-const CACHE_NAME = 'konkouryar-cache-v2';
+const CACHE_NAME = 'konkouryar-cache-v3';
 const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/icons/icon-192.png',
-  '/icons/icon-512.png',
+  './',
+  './index.html',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
@@ -55,7 +55,7 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match('/index.html') || caches.match(event.request))
+        .catch(() => caches.match('./index.html') || caches.match(event.request))
     );
     return;
   }
