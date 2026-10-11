@@ -3,10 +3,10 @@ import { getSupabaseClient } from './supabase';
 import {
   getCoupleSettings,
   saveCoupleSettings,
-  resolveNameFromEmail,
+  resolveNameFromRole,
   broadcastMyState,
-  HUSBAND_CONFIG,
-  WIFE_CONFIG,
+  DEFAULT_HUSBAND_NAME,
+  DEFAULT_WIFE_NAME,
 } from './coupleSync';
 
 export interface AuthState {
@@ -25,7 +25,7 @@ let globalAuthState: AuthState = {
   session: null,
   loading: true,
   email: null,
-  name: 'امیرمحمد',
+  name: DEFAULT_HUSBAND_NAME,
   role: 'husband',
 };
 
@@ -53,9 +53,9 @@ export function initAuthListener(): () => void {
     const cached = localStorage.getItem(AUTH_PERSIST_KEY);
     if (cached) {
       const parsed = JSON.parse(cached);
-      globalAuthState.email = parsed.email || couple.myEmail;
-      globalAuthState.name = parsed.name || couple.myName;
-      globalAuthState.role = parsed.role || couple.myRole;
+      globalAuthState.email = parsed.email || couple.myEmail || null;
+      globalAuthState.name = parsed.name || couple.myName || DEFAULT_HUSBAND_NAME;
+      globalAuthState.role = parsed.role || couple.myRole || 'husband';
     } else if (couple.myEmail) {
       globalAuthState.email = couple.myEmail;
       globalAuthState.name = couple.myName;
@@ -71,7 +71,7 @@ export function initAuthListener(): () => void {
     return () => {};
   }
 
-  // Check initial active session
+  // Check initial active session from Supabase
   client.auth.getSession().then(({ data: { session }, error }: any) => {
     if (error) {
       console.warn('Supabase getSession error:', error.message);
@@ -131,28 +131,24 @@ export function syncUserToCoupleSettings(user: User): void {
   const email = (user.email || '').trim().toLowerCase();
   const current = getCoupleSettings();
 
-  let role: 'husband' | 'wife' = current.myRole;
-  if (email === HUSBAND_CONFIG.email || email.includes('amir') || email.includes('moradi')) {
-    role = 'husband';
-  } else if (email === WIFE_CONFIG.email || email.includes('armita') || email.includes('amirtaplan')) {
-    role = 'wife';
-  }
+  const role: 'husband' | 'wife' =
+    user.user_metadata?.role === 'wife' ? 'wife' : user.user_metadata?.role === 'husband' ? 'husband' : current.myRole;
 
   const name =
     user.user_metadata?.name ||
+    user.user_metadata?.full_name ||
     user.user_metadata?.display_name ||
-    resolveNameFromEmail(email, role);
+    resolveNameFromRole(role, current.myName);
 
-  const partnerEmail = role === 'husband' ? WIFE_CONFIG.email : HUSBAND_CONFIG.email;
-  const partnerName = role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name;
+  const partnerName = role === 'husband' ? DEFAULT_WIFE_NAME : DEFAULT_HUSBAND_NAME;
 
   saveCoupleSettings({
     myRole: role,
-    pairCode: current.pairCode,
+    pairCode: user.user_metadata?.pair_code || current.pairCode,
     myName: name,
     myEmail: email,
     partnerName,
-    partnerEmail,
+    partnerEmail: current.partnerEmail,
   });
 
   globalAuthState.email = email;
@@ -194,7 +190,7 @@ export function subscribeToAuth(callback: (state: AuthState) => void): () => voi
 }
 
 /**
- * Sign in with email and password
+ * Sign in with email and password (REAL authentication - no password bypass)
  */
 export async function signInWithEmail(
   email: string,
@@ -211,9 +207,7 @@ export async function signInWithEmail(
   }
 
   if (!client) {
-    // Offline local persistence fallback
-    applyOfflineSession(cleanEmail);
-    return { ok: true };
+    return { ok: false, error: 'ارتباط با سرور سوپابیس برقرار نیست. لطفاً اتصال اینترنت خود را بررسی کنید.' };
   }
 
   try {
@@ -223,19 +217,13 @@ export async function signInWithEmail(
     });
 
     if (error) {
-      // If user is not confirmed or not found, try sign-up automatically or return readable error
       if (
         error.message?.includes('Invalid login credentials') ||
         error.message?.includes('invalid_grant')
       ) {
-        // Attempt signup if credentials don't exist yet
-        const signUpRes = await signUpWithEmail(cleanEmail, pass);
-        if (signUpRes.ok) {
-          return { ok: true, user: signUpRes.user };
-        }
         return {
           ok: false,
-          error: 'ایمیل یا رمز عبور اشتباه است، یا کاربر هنوز ثبت‌نام نشده است.',
+          error: 'ایمیل یا رمز عبور اشتباه است. لطفاً دقت فرمایید.',
         };
       }
       return { ok: false, error: translateSupabaseAuthError(error.message) };
@@ -251,24 +239,23 @@ export async function signInWithEmail(
 
     return { ok: true };
   } catch (err: any) {
-    // If network fails, allow seamless local session remembering
-    applyOfflineSession(cleanEmail);
     return {
-      ok: true,
-      error: 'ورود به صورت محلی ذخیره شد (خطای ارتباط با سرور).',
+      ok: false,
+      error: err.message || 'خطا در برقراری ارتباط با سرور احراز هویت.',
     };
   }
 }
 
 /**
- * Sign up with email and password
+ * Sign up with email, password, name, and role
  */
 export async function signUpWithEmail(
   email: string,
   pass: string,
   name?: string,
-  role?: 'husband' | 'wife'
-): Promise<{ ok: boolean; error?: string; user?: User }> {
+  role?: 'husband' | 'wife',
+  pairCode?: string
+): Promise<{ ok: boolean; error?: string; user?: User; requiresVerification?: boolean }> {
   const client = getSupabaseClient();
   const cleanEmail = email.trim().toLowerCase();
 
@@ -279,17 +266,11 @@ export async function signUpWithEmail(
     return { ok: false, error: 'رمز عبور باید حداقل ۶ کاراکتر باشد.' };
   }
 
-  const determinedRole =
-    role ||
-    (cleanEmail.includes('armita') || cleanEmail.includes('amirtaplan')
-      ? 'wife'
-      : 'husband');
-  const determinedName =
-    name?.trim() || resolveNameFromEmail(cleanEmail, determinedRole);
+  const determinedRole = role || 'husband';
+  const determinedName = name?.trim() || resolveNameFromRole(determinedRole);
 
   if (!client) {
-    applyOfflineSession(cleanEmail, determinedName, determinedRole);
-    return { ok: true };
+    return { ok: false, error: 'پیکربندی Supabase در دسترس نیست.' };
   }
 
   try {
@@ -299,23 +280,34 @@ export async function signUpWithEmail(
       options: {
         data: {
           name: determinedName,
+          full_name: determinedName,
           role: determinedRole,
+          pair_code: pairCode || getCoupleSettings().pairCode,
         },
       },
     });
 
     if (error) {
-      // If user already exists, suggest signing in
       if (error.message?.includes('already registered')) {
         return {
           ok: false,
-          error: 'این ایمیل قبلاً ثبت شده است. لطفاً از تب «ورود» استفاده کنید.',
+          error: 'این ایمیل قبلاً در سامانه ثبت شده است. لطفاً از تب «ورود» وارد شوید.',
         };
       }
       return { ok: false, error: translateSupabaseAuthError(error.message) };
     }
 
     if (data.user) {
+      // If project has email confirmation enabled, session is null
+      if (!data.session) {
+        return {
+          ok: true,
+          user: data.user,
+          requiresVerification: true,
+          error: 'حساب شما ایجاد شد! لینک فعال‌سازی به ایمیل ارسال شد، لطفاً صندوق ایمیل خود را بررسی و تایید کنید.',
+        };
+      }
+
       syncUserToCoupleSettings(data.user);
       globalAuthState.user = data.user;
       globalAuthState.session = data.session;
@@ -323,11 +315,32 @@ export async function signUpWithEmail(
       return { ok: true, user: data.user };
     }
 
-    applyOfflineSession(cleanEmail, determinedName, determinedRole);
-    return { ok: true };
+    return { ok: false, error: 'ثبت‌نام انجام نشد. لطفاً دوباره تلاش فرمایید.' };
   } catch (err: any) {
-    applyOfflineSession(cleanEmail, determinedName, determinedRole);
-    return { ok: true };
+    return { ok: false, error: err.message || 'خطا در ثبت نام.' };
+  }
+}
+
+/**
+ * Send password reset email
+ */
+export async function resetPasswordForEmail(email: string): Promise<{ ok: boolean; message: string }> {
+  const client = getSupabaseClient();
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) {
+    return { ok: false, message: 'لطفاً آدرس ایمیل خود را وارد کنید.' };
+  }
+  if (!client) {
+    return { ok: false, message: 'اتصال به سرور برقرار نیست.' };
+  }
+  try {
+    const { error } = await client.auth.resetPasswordForEmail(cleanEmail);
+    if (error) {
+      return { ok: false, message: translateSupabaseAuthError(error.message) };
+    }
+    return { ok: true, message: 'لینک بازیابی رمز عبور به ایمیل شما ارسال شد.' };
+  } catch (err: any) {
+    return { ok: false, message: err.message || 'خطا در ارسال ایمیل بازیابی رمز.' };
   }
 }
 
@@ -346,58 +359,24 @@ export async function signOutUser(): Promise<void> {
 
   globalAuthState.user = null;
   globalAuthState.session = null;
+  globalAuthState.email = null;
   localStorage.removeItem(AUTH_PERSIST_KEY);
   notifyListeners();
 }
 
-function applyOfflineSession(
-  email: string,
-  customName?: string,
-  customRole?: 'husband' | 'wife'
-) {
-  const role: 'husband' | 'wife' =
-    customRole ||
-    (email.includes('armita') || email.includes('amirtaplan') ? 'wife' : 'husband');
-  const name =
-    customName ||
-    (role === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name);
-
-  saveCoupleSettings({
-    myRole: role,
-    pairCode: 'KONKOOR-DUO',
-    myName: name,
-    myEmail: email,
-    partnerName: role === 'husband' ? WIFE_CONFIG.name : HUSBAND_CONFIG.name,
-    partnerEmail: role === 'husband' ? WIFE_CONFIG.email : HUSBAND_CONFIG.email,
-  });
-
-  globalAuthState.email = email;
-  globalAuthState.name = name;
-  globalAuthState.role = role;
-
-  try {
-    localStorage.setItem(
-      AUTH_PERSIST_KEY,
-      JSON.stringify({
-        email,
-        name,
-        role,
-        savedAt: Date.now(),
-      })
-    );
-  } catch {
-    // ignore
-  }
-
-  notifyListeners();
-}
-
+/**
+ * Switch role view locally (with study reset)
+ */
 export function switchActiveUser(targetRole: 'husband' | 'wife'): void {
-  const targetEmail = targetRole === 'husband' ? HUSBAND_CONFIG.email : WIFE_CONFIG.email;
-  const targetName = targetRole === 'husband' ? HUSBAND_CONFIG.name : WIFE_CONFIG.name;
-  applyOfflineSession(targetEmail, targetName, targetRole);
+  const current = getCoupleSettings();
+  const targetName = targetRole === 'husband' ? DEFAULT_HUSBAND_NAME : DEFAULT_WIFE_NAME;
+  saveCoupleSettings({
+    myRole: targetRole,
+    myName: targetName,
+    partnerName: targetRole === 'husband' ? DEFAULT_WIFE_NAME : DEFAULT_HUSBAND_NAME,
+  });
   try {
-    broadcastMyState({ isStudying: false, sessionElapsedSeconds: 0 });
+    broadcastMyState({ isStudying: false, sessionElapsedSeconds: 0 }, { persistToDb: true });
   } catch {}
 }
 
@@ -405,7 +384,7 @@ export function translateSupabaseAuthError(msg: string): string {
   if (!msg) return 'خطایی در احراز هویت رخ داد.';
   if (msg.includes('Password should be at least')) return 'رمز عبور باید حداقل ۶ کاراکتر باشد.';
   if (msg.includes('Invalid email')) return 'فرمت آدرس ایمیل نامعتبر است.';
-  if (msg.includes('Email not confirmed')) return 'ایمیل شما هنوز تایید نشده است یا می‌توانید با رمز قبلی وارد شوید.';
-  if (msg.includes('rate limit')) return 'درخواست‌های بیش از حد؛ لطفاً چند دقیقه دیگر امتحان کنید.';
+  if (msg.includes('Email not confirmed')) return 'ایمیل شما هنوز تایید نشده است. لطفاً لینک ارسال شده به ایمیل را باز کنید.';
+  if (msg.includes('rate limit')) return 'تعداد درخواست‌ها بیش از حد مجاز است؛ لطفاً چند دقیقه صبر کنید.';
   return msg;
 }

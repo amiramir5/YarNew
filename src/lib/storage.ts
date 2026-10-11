@@ -43,7 +43,7 @@ export function getDefaultSettings(): AppSettings {
       primaryProvider: 'gemini',
       fallbackEnabled: true,
       geminiKey: '',
-      geminiModel: 'gemini-2.5-flash',
+      geminiModel: 'gemini-3.8-flash',
       openrouterKey: '',
       openrouterModel: 'openrouter/free',
     },
@@ -101,13 +101,11 @@ export function loadSessions(customEmail?: string): Session[] {
   const data = getStored<Session[]>(scopedKey, []);
   if (data.length > 0) return data;
 
-  // Fallback to unscoped legacy key ONLY if it's the default/first user (Amir)
+  // Only fallback to legacy key if user has NO email configured at all (anonymous local user)
   const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email || email.includes('amir') || email.includes('moradi')) {
+  if (!email) {
     const legacy = getStored<Session[]>(STORAGE_KEYS.SESSIONS, []);
     if (legacy.length > 0) {
-      // Migrate legacy sessions to Amir's scoped key
-      setStored(scopedKey, legacy);
       return legacy;
     }
   }
@@ -124,10 +122,9 @@ export function loadExams(customEmail?: string): Exam[] {
   if (data.length > 0) return data;
 
   const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email || email.includes('amir') || email.includes('moradi')) {
+  if (!email) {
     const legacy = getStored<Exam[]>(STORAGE_KEYS.EXAMS, []);
     if (legacy.length > 0) {
-      setStored(scopedKey, legacy);
       return legacy;
     }
   }
@@ -144,10 +141,9 @@ export function loadMistakes(customEmail?: string): MistakeCard[] {
   if (data.length > 0) return data;
 
   const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email || email.includes('amir') || email.includes('moradi')) {
+  if (!email) {
     const legacy = getStored<MistakeCard[]>(STORAGE_KEYS.MISTAKES, []);
     if (legacy.length > 0) {
-      setStored(scopedKey, legacy);
       return legacy;
     }
   }
@@ -164,10 +160,9 @@ export function loadPlans(customEmail?: string): DailyPlan[] {
   if (data.length > 0) return data;
 
   const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email || email.includes('amir') || email.includes('moradi')) {
+  if (!email) {
     const legacy = getStored<DailyPlan[]>(STORAGE_KEYS.PLANS, []);
     if (legacy.length > 0) {
-      setStored(scopedKey, legacy);
       return legacy;
     }
   }
@@ -228,11 +223,13 @@ export interface StoredTimerState {
   day: string;
 }
 
-export function loadTimerState(): StoredTimerState | null {
-  return getStored<StoredTimerState | null>(STORAGE_KEYS.TIMER_STATE, null);
+export function loadTimerState(customEmail?: string): StoredTimerState | null {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.TIMER_STATE, customEmail);
+  return getStored<StoredTimerState | null>(scopedKey, null);
 }
-export function saveTimerState(state: StoredTimerState | null): void {
-  setStored(STORAGE_KEYS.TIMER_STATE, state);
+export function saveTimerState(state: StoredTimerState | null, customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.TIMER_STATE, customEmail);
+  setStored(scopedKey, state);
 }
 
 // Full Export / Import

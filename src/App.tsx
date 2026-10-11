@@ -44,7 +44,13 @@ import {
   pushSessionToCloud,
   pushExamToCloud,
   pushMistakeToCloud,
+  pushPlanToCloud,
+  pushNoteToCloud,
+  pushProgressToCloud,
+  pushChecklistToCloud,
   fetchCloudData,
+  mergeWithLastWriteWins,
+  flushOutboxQueue,
 } from './lib/cloudSync';
 import {
   broadcastMyState,
@@ -164,38 +170,88 @@ export default function App() {
     }
   }, []);
 
-  // Initial Cloud Sync (merge remote Supabase records with local)
+  // Refs for resilient background & realtime sync
+  const isTimerRunningRef = useRef(isTimerRunning);
+  const elapsedSecondsRef = useRef(elapsedSeconds);
+  const activeSubjectRef = useRef(activeSubject);
+  const sessionsRef = useRef(sessions);
+  const timerStartedAtRef = useRef(timerStartedAt);
+  const accumulatedMsRef = useRef(accumulatedMs);
+  const wakeLockRef = useRef<any>(null);
+
+  useEffect(() => { isTimerRunningRef.current = isTimerRunning; }, [isTimerRunning]);
+  useEffect(() => { elapsedSecondsRef.current = elapsedSeconds; }, [elapsedSeconds]);
+  useEffect(() => { activeSubjectRef.current = activeSubject; }, [activeSubject]);
+  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  useEffect(() => { timerStartedAtRef.current = timerStartedAt; }, [timerStartedAt]);
+  useEffect(() => { accumulatedMsRef.current = accumulatedMs; }, [accumulatedMs]);
+
+  const requestWakeLock = async () => {
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+      } catch {}
+    }
+  };
+
+  const releaseWakeLock = () => {
+    if (wakeLockRef.current) {
+      try {
+        wakeLockRef.current.release();
+      } catch {}
+      wakeLockRef.current = null;
+    }
+  };
+
+  // Initial Cloud Sync with Last-Write-Wins Conflict Resolution
   useEffect(() => {
     fetchCloudData().then((remote) => {
       if (!remote) return;
       if (remote.sessions && remote.sessions.length > 0) {
         setSessions((prev) => {
-          const prevMap = new Map(prev.map((s) => [s.id, s]));
-          remote.sessions?.forEach((s) => prevMap.set(s.id, s));
-          const merged = Array.from(prevMap.values()).sort((a, b) => b.created_at - a.created_at);
+          const merged = mergeWithLastWriteWins(prev, remote.sessions || []);
           saveSessions(merged);
           return merged;
         });
       }
       if (remote.exams && remote.exams.length > 0) {
         setExams((prev) => {
-          const prevMap = new Map(prev.map((e) => [e.id, e]));
-          remote.exams?.forEach((e) => prevMap.set(e.id, e));
-          const merged = Array.from(prevMap.values()).sort((a, b) => b.created_at - a.created_at);
+          const merged = mergeWithLastWriteWins(prev, remote.exams || []);
           saveExams(merged);
           return merged;
         });
       }
       if (remote.mistakes && remote.mistakes.length > 0) {
         setMistakes((prev) => {
-          const prevMap = new Map(prev.map((m) => [m.id, m]));
-          remote.mistakes?.forEach((m) => prevMap.set(m.id, m));
-          const merged = Array.from(prevMap.values()).sort((a, b) => b.created_at - a.created_at);
+          const merged = mergeWithLastWriteWins(prev, remote.mistakes || []);
           saveMistakes(merged);
           return merged;
         });
       }
+      if (remote.plans && remote.plans.length > 0) {
+        setPlans((prev) => {
+          const merged = mergeWithLastWriteWins(prev, remote.plans || []);
+          savePlans(merged);
+          return merged;
+        });
+      }
+      if (remote.notes && remote.notes.length > 0) {
+        setNotes((prev) => {
+          const merged = mergeWithLastWriteWins(prev, remote.notes || []);
+          saveNotes(merged);
+          return merged;
+        });
+      }
+      if (remote.progress && remote.progress.length > 0) {
+        setProgressList((prev) => {
+          const merged = mergeWithLastWriteWins(prev, remote.progress || []);
+          saveProgress(merged);
+          return merged;
+        });
+      }
     });
+
+    flushOutboxQueue();
   }, []);
 
   // Partner Live State Sync & Realtime Subscription
@@ -216,15 +272,15 @@ export default function App() {
       }
     });
 
-    // 3. Fallback active polling every 3.5 seconds for resilient mobile sync
+    // 3. Fallback active polling every 20 seconds only when tab is visible
     const pollInterval = setInterval(() => {
-      if (!isMounted) return;
+      if (!isMounted || (typeof document !== 'undefined' && document.hidden)) return;
       fetchRemotePartnerState().then((remote) => {
         if (remote && isMounted) {
           setPartnerLiveState(remote);
         }
       });
-    }, 3500);
+    }, 20000);
 
     return () => {
       isMounted = false;
@@ -238,17 +294,48 @@ export default function App() {
     const tick = setInterval(() => {
       setPartnerLiveState((prev) => {
         if (!prev.isStudying) return prev;
-        const next = {
+        return {
           ...prev,
           sessionElapsedSeconds: prev.sessionElapsedSeconds + 1,
           todaySeconds: prev.todaySeconds + 1,
           lastHeartbeat: Date.now(),
         };
-        savePartnerState(next);
-        return next;
       });
     }, 1000);
     return () => clearInterval(tick);
+  }, []);
+
+  // Background, Visibility & Lockscreen lifecycle handlers
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        // Immediate sync on returning from lock screen / background
+        if (isTimerRunningRef.current && timerStartedAtRef.current) {
+          const now = Date.now();
+          const totalMs = accumulatedMsRef.current + (now - timerStartedAtRef.current);
+          setElapsedSeconds(Math.floor(totalMs / 1000));
+          requestWakeLock();
+        }
+        broadcastMyState({ online: true });
+        fetchRemotePartnerState().then((remote) => {
+          if (remote) setPartnerLiveState(remote);
+        });
+        flushOutboxQueue();
+      } else {
+        broadcastMyState({ online: false });
+      }
+    };
+
+    const handlePageHide = () => {
+      broadcastMyState({ online: false });
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+    };
   }, []);
 
   // Listen to profile switch (Amir <-> Armita) to reload user data seamlessly
@@ -287,32 +374,48 @@ export default function App() {
   useEffect(() => {
     let interval: any = null;
     if (isTimerRunning && timerStartedAt) {
+      requestWakeLock();
       interval = setInterval(() => {
         const totalMs = accumulatedMs + (Date.now() - timerStartedAt);
         setElapsedSeconds(Math.floor(totalMs / 1000));
       }, 1000);
+    } else {
+      releaseWakeLock();
     }
-    return () => clearInterval(interval);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
   }, [isTimerRunning, timerStartedAt, accumulatedMs]);
 
-  // Periodic heartbeat broadcast to Supabase Realtime every 3 seconds while timer is active
+  // Periodic heartbeat broadcast to Supabase Realtime every 3.5 seconds while timer is active
+  // Critical fix: depends ONLY on isTimerRunning, reads live values via refs so it NEVER gets reset every second!
   useEffect(() => {
     if (!isTimerRunning) return;
 
     const heartbeatTimer = setInterval(() => {
-      const stats = getTodayOwnStats();
+      const todayKey = studyDayKey();
+      const todaySessions = (sessionsRef.current || []).filter((s) => s && !s.deleted_at && s.day === todayKey);
+      const completedSecs = todaySessions.reduce((acc, s) => acc + (s.seconds || 0), 0);
+      const totalSecs = completedSecs + elapsedSecondsRef.current;
+      const totalTests = todaySessions.reduce(
+        (acc, s) => acc + (s.correct || 0) + (s.wrong || 0) + (s.blank || 0),
+        0
+      );
+
       broadcastMyState({
         isStudying: true,
-        subject: activeSubject,
-        subjectName: getSubject(activeSubject).name,
-        sessionElapsedSeconds: elapsedSeconds,
-        todaySeconds: stats.totalSecs,
-        todayTests: stats.totalTests,
+        subject: activeSubjectRef.current,
+        subjectName: getSubject(activeSubjectRef.current).name,
+        timerStartedAt: timerStartedAtRef.current,
+        accumulatedSeconds: Math.floor(accumulatedMsRef.current / 1000),
+        sessionElapsedSeconds: elapsedSecondsRef.current,
+        todaySeconds: totalSecs,
+        todayTests: totalTests,
       });
-    }, 3000);
+    }, 3500);
 
     return () => clearInterval(heartbeatTimer);
-  }, [isTimerRunning, elapsedSeconds, activeSubject, sessions]);
+  }, [isTimerRunning]);
 
   // Persist timer state to storage whenever it changes
   useEffect(() => {
@@ -330,7 +433,7 @@ export default function App() {
     }
   }, [isTimerRunning, isTimerPaused, timerStartedAt, accumulatedMs, activeSubject]);
 
-  // Timer control handlers with immediate Supabase broadcast
+  // Timer control handlers with immediate Supabase broadcast & DB milestone persistence
   const handleStartTimer = () => {
     const now = Date.now();
     setTimerStartedAt(now);
@@ -338,14 +441,19 @@ export default function App() {
     setIsTimerPaused(false);
 
     const stats = getTodayOwnStats();
-    broadcastMyState({
-      isStudying: true,
-      subject: activeSubject,
-      subjectName: getSubject(activeSubject).name,
-      sessionElapsedSeconds: 0,
-      todaySeconds: stats.totalSecs,
-      todayTests: stats.totalTests,
-    });
+    broadcastMyState(
+      {
+        isStudying: true,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        timerStartedAt: now,
+        accumulatedSeconds: Math.floor(accumulatedMs / 1000),
+        sessionElapsedSeconds: 0,
+        todaySeconds: stats.totalSecs,
+        todayTests: stats.totalTests,
+      },
+      { persistToDb: true }
+    );
   };
 
   const handlePauseTimer = () => {
@@ -360,30 +468,41 @@ export default function App() {
     setElapsedSeconds(newElapsed);
 
     const stats = getTodayOwnStats();
-    broadcastMyState({
-      isStudying: false,
-      subject: activeSubject,
-      subjectName: getSubject(activeSubject).name,
-      sessionElapsedSeconds: newElapsed,
-      todaySeconds: stats.totalSecs,
-      todayTests: stats.totalTests,
-    });
+    broadcastMyState(
+      {
+        isStudying: false,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        timerStartedAt: null,
+        accumulatedSeconds: newElapsed,
+        sessionElapsedSeconds: newElapsed,
+        todaySeconds: stats.totalSecs,
+        todayTests: stats.totalTests,
+      },
+      { persistToDb: true }
+    );
   };
 
   const handleResumeTimer = () => {
-    setTimerStartedAt(Date.now());
+    const now = Date.now();
+    setTimerStartedAt(now);
     setIsTimerRunning(true);
     setIsTimerPaused(false);
 
     const stats = getTodayOwnStats();
-    broadcastMyState({
-      isStudying: true,
-      subject: activeSubject,
-      subjectName: getSubject(activeSubject).name,
-      sessionElapsedSeconds: elapsedSeconds,
-      todaySeconds: stats.totalSecs,
-      todayTests: stats.totalTests,
-    });
+    broadcastMyState(
+      {
+        isStudying: true,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        timerStartedAt: now,
+        accumulatedSeconds: Math.floor(accumulatedMs / 1000),
+        sessionElapsedSeconds: elapsedSeconds,
+        todaySeconds: stats.totalSecs,
+        todayTests: stats.totalTests,
+      },
+      { persistToDb: true }
+    );
   };
 
   const handleResetTimer = () => {
@@ -395,14 +514,19 @@ export default function App() {
     saveTimerState(null);
 
     const stats = getTodayOwnStats();
-    broadcastMyState({
-      isStudying: false,
-      subject: activeSubject,
-      subjectName: getSubject(activeSubject).name,
-      sessionElapsedSeconds: 0,
-      todaySeconds: stats.totalSecs,
-      todayTests: stats.totalTests,
-    });
+    broadcastMyState(
+      {
+        isStudying: false,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        timerStartedAt: null,
+        accumulatedSeconds: 0,
+        sessionElapsedSeconds: 0,
+        todaySeconds: stats.totalSecs,
+        todayTests: stats.totalTests,
+      },
+      { persistToDb: true }
+    );
   };
 
   const handleFinishTimer = () => {
@@ -438,14 +562,19 @@ export default function App() {
       0
     );
 
-    broadcastMyState({
-      isStudying: false,
-      subject: activeSubject,
-      subjectName: getSubject(activeSubject).name,
-      sessionElapsedSeconds: 0,
-      todaySeconds: newTotalSecs,
-      todayTests: newTotalTests,
-    });
+    broadcastMyState(
+      {
+        isStudying: false,
+        subject: activeSubject,
+        subjectName: getSubject(activeSubject).name,
+        timerStartedAt: null,
+        accumulatedSeconds: 0,
+        sessionElapsedSeconds: 0,
+        todaySeconds: newTotalSecs,
+        todayTests: newTotalTests,
+      },
+      { persistToDb: true }
+    );
   };
 
   // Data Actions
@@ -464,6 +593,10 @@ export default function App() {
   };
 
   const handleDeleteExam = (id: string) => {
+    const target = exams.find((e) => e.id === id);
+    if (target) {
+      pushExamToCloud({ ...target, deleted_at: Date.now() });
+    }
     const updated = exams.map((e) => (e.id === id ? { ...e, deleted_at: Date.now() } : e));
     setExams(updated);
     saveExams(updated);
@@ -478,6 +611,7 @@ export default function App() {
 
   const handleReviewResult = (cardId: string, remembered: boolean) => {
     const today = studyDayKey();
+    let updatedCard: MistakeCard | null = null;
     const updated = mistakes.map((card) => {
       if (card.id !== cardId) return card;
       const curBox = card.box || 1;
@@ -486,7 +620,7 @@ export default function App() {
       const nextReview = addDays(today, intervalDays);
 
       const history = card.history || [];
-      return {
+      updatedCard = {
         ...card,
         box: nextBox,
         next_review: nextReview,
@@ -496,13 +630,21 @@ export default function App() {
           { ts: Date.now(), right: remembered, box: nextBox, interval: intervalDays },
         ],
       };
+      return updatedCard;
     });
 
     setMistakes(updated);
     saveMistakes(updated);
+    if (updatedCard) {
+      pushMistakeToCloud(updatedCard);
+    }
   };
 
   const handleDeleteMistake = (cardId: string) => {
+    const target = mistakes.find((m) => m.id === cardId);
+    if (target) {
+      pushMistakeToCloud({ ...target, deleted_at: Date.now() });
+    }
     const updated = mistakes.map((m) =>
       m.id === cardId ? { ...m, deleted_at: Date.now() } : m
     );
@@ -521,15 +663,21 @@ export default function App() {
     }
     setPlans(updated);
     savePlans(updated);
+    pushPlanToCloud(plan);
   };
 
   const handleAddProgress = (entry: ProgressEntry) => {
     const updated = [entry, ...progressList];
     setProgressList(updated);
     saveProgress(updated);
+    pushProgressToCloud(entry);
   };
 
   const handleDeleteProgress = (id: string) => {
+    const target = progressList.find((p) => p.id === id);
+    if (target) {
+      pushProgressToCloud({ ...target, deleted_at: Date.now() } as any);
+    }
     const updated = progressList.map((p) => (p.id === id ? { ...p, deleted_at: Date.now() } : p));
     setProgressList(updated);
     saveProgress(updated);
@@ -539,9 +687,14 @@ export default function App() {
     const updated = [note, ...notes];
     setNotes(updated);
     saveNotes(updated);
+    pushNoteToCloud(note);
   };
 
   const handleDeleteNote = (id: string) => {
+    const target = notes.find((n) => n.id === id);
+    if (target) {
+      pushNoteToCloud({ ...target, deleted_at: Date.now() } as any);
+    }
     const updated = notes.map((n) => (n.id === id ? { ...n, deleted_at: Date.now() } : n));
     setNotes(updated);
     saveNotes(updated);
@@ -551,6 +704,7 @@ export default function App() {
     const updated = { ...checklist, [key]: !checklist[key] };
     setChecklist(updated);
     saveChecklist(updated);
+    pushChecklistToCloud(studyDayKey(), updated);
   };
 
   const handleUpdateSettings = (newSettings: AppSettings) => {

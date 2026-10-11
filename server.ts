@@ -35,7 +35,7 @@ function getGeminiClient(customKey?: string) {
   });
 }
 
-const CANDIDATE_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+const CANDIDATE_MODELS = ['gemini-3.8-flash', 'gemini-flash-latest', 'gemini-3.1-pro-preview'];
 
 // Resilient Fallback Data Generators for Konkoor Subjects
 function getFallbackExplain(topic: string, subject: string) {

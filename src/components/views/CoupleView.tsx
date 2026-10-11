@@ -41,6 +41,7 @@ import { testSupabaseConnection } from '../../lib/supabase';
 import { switchActiveUser } from '../../lib/auth';
 import { getSubject } from '../../lib/constants';
 import { Avatar3DBadge } from '../common/Avatar3DBadge';
+import { CANONICAL_SUPABASE_SQL } from '../../lib/sqlSchema';
 
 interface CoupleViewProps {
   sessions: Session[];
@@ -712,30 +713,19 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 </div>
               </div>
 
-              {/* My Email & Auto Name Resolution */}
+              {/* My Email & Name */}
               <div className="space-y-1">
                 <label className="block font-bold text-slate-700 dark:text-slate-300">
-                  ایمیل ورودی من (شناسایی هوشمند حساب)
+                  ایمیل حساب کاربری من
                 </label>
                 <input
                   type="email"
                   value={myEmail}
-                  placeholder="am.moradidaem@gmail.com"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setMyEmail(val);
-                    if (val.toLowerCase().includes('amir') || val.toLowerCase().includes('moradi')) {
-                      setMyName('امیرمحمد');
-                    } else if (val.toLowerCase().includes('armita') || val.toLowerCase().includes('amirtaplan')) {
-                      setMyName('آرمیتا');
-                    }
-                  }}
+                  placeholder="my-email@example.com"
+                  onChange={(e) => setMyEmail(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl neu-inset font-medium text-slate-800 dark:text-slate-100"
                   dir="ltr"
                 />
-                <span className="text-[10px] text-blue-600 dark:text-blue-400 block">
-                  با انتخاب نقش یا ورود ایمیل، هویت کاربری در تمام بخش‌های اپلیکیشن (سربرگ، تایمر و رقابت) بی‌درنگ همگام‌سازی می‌شود.
-                </span>
               </div>
 
               <div>
@@ -745,7 +735,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 <input
                   type="text"
                   value={myName}
-                  placeholder="امیرمحمد"
+                  placeholder="نام نمایشی شما"
                   onChange={(e) => setMyName(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl neu-inset font-bold text-slate-800 dark:text-slate-100"
                 />
@@ -759,16 +749,8 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 <input
                   type="email"
                   value={partnerEmail}
-                  placeholder="amirtaplans@gmail.com"
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setPartnerEmail(val);
-                    if (val.toLowerCase().includes('armita') || val.toLowerCase().includes('amirtaplan')) {
-                      setPartnerName('آرمیتا');
-                    } else if (val.toLowerCase().includes('amir') || val.toLowerCase().includes('moradi')) {
-                      setPartnerName('امیرمحمد');
-                    }
-                  }}
+                  placeholder="partner-email@example.com"
+                  onChange={(e) => setPartnerEmail(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl neu-inset font-medium text-slate-800 dark:text-slate-100"
                   dir="ltr"
                 />
@@ -781,7 +763,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 <input
                   type="text"
                   value={partnerName}
-                  placeholder="آرمیتا"
+                  placeholder="نام نمایشی همسر"
                   onChange={(e) => setPartnerName(e.target.value)}
                   className="w-full px-3 py-2.5 rounded-xl neu-inset font-bold text-slate-800 dark:text-slate-100"
                 />
@@ -857,138 +839,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    const fullSql = `-- ==============================================================================
--- اسکریپت SQL جامع و کامل دیتابیس سوپابیس (Supabase) برای اپلیکیشن کنکور دو نفره
--- این کد را مستقیماً در بخش SQL Editor در پنل Supabase کپی کرده و Run کنید.
--- ==============================================================================
-
--- ۰. حذف جداول قدیمی یا ناقص در صورت وجود (برای جلوگیری از خطای ستون‌های تکراری یا ناسازگار)
-DROP TABLE IF EXISTS public.couple_live_states CASCADE;
-DROP TABLE IF EXISTS public.sessions CASCADE;
-DROP TABLE IF EXISTS public.exams CASCADE;
-DROP TABLE IF EXISTS public.mistakes CASCADE;
-DROP TABLE IF EXISTS public.daily_plans CASCADE;
-
--- ۱. جدول وضعیت رقابت و مطالعه زنده دو نفره (Couple Live States)
-CREATE TABLE public.couple_live_states (
-  pair_code text NOT NULL,
-  role text NOT NULL,
-  display_name text DEFAULT 'کاربر',
-  email text,
-  is_studying boolean DEFAULT false,
-  subject text DEFAULT 'bio',
-  subject_name text DEFAULT 'زیست‌شناسی',
-  session_elapsed_seconds integer DEFAULT 0,
-  today_seconds integer DEFAULT 0,
-  today_tests integer DEFAULT 0,
-  study_day text,
-  online boolean DEFAULT true,
-  updated_at timestamp with time zone DEFAULT now(),
-  PRIMARY KEY (pair_code, role)
-);
-
--- ۲. جدول پارت‌ها و جلسات مطالعه (Sessions)
-CREATE TABLE IF NOT EXISTS public.sessions (
-  id text PRIMARY KEY,
-  created_at bigint NOT NULL,
-  updated_at bigint NOT NULL,
-  deleted_at bigint,
-  device_id text DEFAULT 'client',
-  pair_code text DEFAULT 'KONKOOR-DUO',
-  user_email text,
-  subject text NOT NULL,
-  chapter text,
-  goftar text,
-  seconds integer NOT NULL DEFAULT 0,
-  correct integer DEFAULT 0,
-  wrong integer DEFAULT 0,
-  blank integer DEFAULT 0,
-  note text DEFAULT '',
-  day text NOT NULL,
-  type text DEFAULT 'آموزش و مطالعه'
-);
-
--- ۳. جدول کارنامه و آزمون‌ها (Exams)
-CREATE TABLE IF NOT EXISTS public.exams (
-  id text PRIMARY KEY,
-  created_at bigint NOT NULL,
-  updated_at bigint NOT NULL,
-  deleted_at bigint,
-  device_id text DEFAULT 'client',
-  pair_code text DEFAULT 'KONKOOR-DUO',
-  user_email text,
-  subject text NOT NULL,
-  day text NOT NULL,
-  correct integer DEFAULT 0,
-  wrong integer DEFAULT 0,
-  blank integer DEFAULT 0,
-  duration integer DEFAULT 0,
-  percent numeric DEFAULT 0,
-  note text DEFAULT ''
-);
-
--- ۴. جدول جعبه لایتنر و دفترچه اشتباهات (Mistakes)
-CREATE TABLE IF NOT EXISTS public.mistakes (
-  id text PRIMARY KEY,
-  created_at bigint NOT NULL,
-  updated_at bigint NOT NULL,
-  deleted_at bigint,
-  device_id text DEFAULT 'client',
-  pair_code text DEFAULT 'KONKOOR-DUO',
-  user_email text,
-  subject text NOT NULL,
-  chapter text,
-  cause text NOT NULL,
-  question text NOT NULL,
-  source text,
-  importance integer DEFAULT 3,
-  image_data text,
-  box integer DEFAULT 1,
-  next_review text NOT NULL,
-  history jsonb DEFAULT '[]'::jsonb
-);
-
--- ۵. جدول برنامه‌ریزی روزانه (Daily Plans)
-CREATE TABLE IF NOT EXISTS public.daily_plans (
-  id text PRIMARY KEY,
-  pair_code text DEFAULT 'KONKOOR-DUO',
-  user_email text,
-  day text NOT NULL,
-  wake_time text DEFAULT '06:00',
-  items jsonb DEFAULT '[]'::jsonb,
-  created_at bigint NOT NULL,
-  updated_at bigint NOT NULL,
-  device_id text DEFAULT 'client',
-  deleted_at bigint
-);
-
--- ۶. ایندکس‌های سریع
-CREATE INDEX IF NOT EXISTS idx_sessions_pair ON public.sessions(pair_code);
-CREATE INDEX IF NOT EXISTS idx_sessions_day ON public.sessions(day);
-CREATE INDEX IF NOT EXISTS idx_exams_pair ON public.exams(pair_code);
-CREATE INDEX IF NOT EXISTS idx_mistakes_pair ON public.mistakes(pair_code);
-CREATE INDEX IF NOT EXISTS idx_daily_plans_pair ON public.daily_plans(pair_code);
-
--- ۷. امنیت سطحی RLS و دسترسی
-ALTER TABLE public.couple_live_states ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.exams ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.mistakes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.daily_plans ENABLE ROW LEVEL SECURITY;
-
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Public Couple' AND tablename = 'couple_live_states') THEN CREATE POLICY "Public Couple" ON public.couple_live_states FOR ALL USING (true) WITH CHECK (true); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Public Sessions' AND tablename = 'sessions') THEN CREATE POLICY "Public Sessions" ON public.sessions FOR ALL USING (true) WITH CHECK (true); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Public Exams' AND tablename = 'exams') THEN CREATE POLICY "Public Exams" ON public.exams FOR ALL USING (true) WITH CHECK (true); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Public Mistakes' AND tablename = 'mistakes') THEN CREATE POLICY "Public Mistakes" ON public.mistakes FOR ALL USING (true) WITH CHECK (true); END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Public Plans' AND tablename = 'daily_plans') THEN CREATE POLICY "Public Plans" ON public.daily_plans FOR ALL USING (true) WITH CHECK (true); END IF;
-END $$;
-
--- ۸. فعال‌سازی Realtime
-ALTER PUBLICATION supabase_realtime ADD TABLE public.couple_live_states;
-ALTER PUBLICATION supabase_realtime ADD TABLE public.sessions;
-`;
-                    navigator.clipboard.writeText(fullSql);
+                    navigator.clipboard.writeText(CANONICAL_SUPABASE_SQL);
                     setSqlCopied(true);
                     setTimeout(() => setSqlCopied(false), 3000);
                   }}
@@ -1000,10 +851,13 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.sessions;
                 <button
                   type="button"
                   onClick={() => {
+                    const blob = new Blob([CANONICAL_SUPABASE_SQL], { type: 'text/plain;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
                     const a = document.createElement('a');
-                    a.href = '/supabase_schema.sql';
+                    a.href = url;
                     a.download = 'supabase_schema.sql';
                     a.click();
+                    setTimeout(() => URL.revokeObjectURL(url), 1000);
                   }}
                   className="px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 font-bold transition-colors cursor-pointer shrink-0"
                 >

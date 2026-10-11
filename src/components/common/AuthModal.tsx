@@ -4,7 +4,6 @@ import {
   Key,
   LogIn,
   LogOut,
-  CheckCircle2,
   ShieldCheck,
   Shield,
   User,
@@ -12,12 +11,15 @@ import {
   AlertCircle,
   Loader2,
   UserPlus,
+  RotateCcw,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import {
-  HUSBAND_CONFIG,
-  WIFE_CONFIG,
   getCoupleSettings,
+  DEFAULT_HUSBAND_NAME,
+  DEFAULT_WIFE_NAME,
 } from '../../lib/coupleSync';
 
 interface AuthModalProps {
@@ -31,52 +33,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onLoginSuccess,
 }) => {
-  const { user, session, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, switchUser } = useAuth();
+  const { user, session, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, resetPassword } = useAuth();
   const currentCouple = getCoupleSettings();
 
-  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
-  const [email, setEmail] = useState(activeEmail || currentCouple.myEmail || HUSBAND_CONFIG.email);
-  const [password, setPassword] = useState('konkoor1404');
-  const [name, setName] = useState(activeName || currentCouple.myName || 'امیرمحمد');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [email, setEmail] = useState(activeEmail || currentCouple.myEmail || '');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [name, setName] = useState(activeName || currentCouple.myName || DEFAULT_HUSBAND_NAME);
   const [role, setRole] = useState<'husband' | 'wife'>(activeRole || currentCouple.myRole || 'husband');
+  const [pairCode, setPairCode] = useState(currentCouple.pairCode || '');
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
 
   if (!isOpen) return null;
-
-  const handleEmailChange = (val: string) => {
-    setEmail(val);
-    const clean = val.toLowerCase().trim();
-    if (clean.includes('armita') || clean.includes('amirtaplan')) {
-      setName('آرمیتا');
-      setRole('wife');
-    } else if (clean.includes('amir') || clean.includes('moradi')) {
-      setName('امیرمحمد');
-      setRole('husband');
-    }
-  };
-
-  const handleSelectPreset = (target: 'husband' | 'wife') => {
-    switchUser(target);
-    if (target === 'husband') {
-      setEmail(HUSBAND_CONFIG.email);
-      setName(HUSBAND_CONFIG.name);
-      setRole('husband');
-      setPassword('konkoor1404');
-    } else {
-      setEmail(WIFE_CONFIG.email);
-      setName(WIFE_CONFIG.name);
-      setRole('wife');
-      setPassword('konkoor1404');
-    }
-    setErrorMessage('');
-    setSuccessMessage(`حساب کاربری روی این دستگاه به «${target === 'husband' ? 'امیرمحمد' : 'آرمیتا'}» تغییر یافت.`);
-    setTimeout(() => {
-      setSuccessMessage('');
-    }, 2000);
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -86,28 +58,54 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     const cleanEmail = email.trim();
     if (!cleanEmail) {
-      setErrorMessage('لطفاً ایمیل را وارد کنید.');
+      setErrorMessage('لطفاً آدرس ایمیل را وارد فرمایید.');
       setIsLoading(false);
       return;
     }
 
     try {
+      if (mode === 'reset') {
+        const res = await resetPassword(cleanEmail);
+        setIsLoading(false);
+        if (res.ok) {
+          setSuccessMessage(res.message);
+        } else {
+          setErrorMessage(res.message);
+        }
+        return;
+      }
+
       if (mode === 'signin') {
+        if (!password) {
+          setErrorMessage('لطفاً رمز عبور را وارد نمایید.');
+          setIsLoading(false);
+          return;
+        }
         const res = await signIn(cleanEmail, password);
         if (!res.ok) {
-          setErrorMessage(res.error || 'خطا در ورود به حساب');
+          setErrorMessage(res.error || 'ایمیل یا رمز عبور اشتباه است.');
           setIsLoading(false);
           return;
         }
-        setSuccessMessage('ورود موفقیت‌آمیز بود! نشست کاربری شما برای همیشه در این دستگاه ذخیره شد.');
+        setSuccessMessage('ورود با موفقیت انجام شد! اطلاعات شما همگام‌سازی می‌شود.');
       } else {
-        const res = await signUp(cleanEmail, password, name, role);
-        if (!res.ok) {
-          setErrorMessage(res.error || 'خطا در ثبت‌نام حساب');
+        if (!password || password.length < 6) {
+          setErrorMessage('رمز عبور باید حداقل ۶ کاراکتر باشد.');
           setIsLoading(false);
           return;
         }
-        setSuccessMessage('حساب کاربری با موفقیت ایجاد و فعال شد.');
+        const res = await signUp(cleanEmail, password, name, role, pairCode);
+        if (!res.ok) {
+          setErrorMessage(res.error || 'خطا در ثبت‌نام حساب کاربری.');
+          setIsLoading(false);
+          return;
+        }
+        if (res.requiresVerification) {
+          setSuccessMessage(res.error || 'لینک تأیید به ایمیل ارسال شد. لطفاً ایمیل خود را بررسی کنید.');
+          setIsLoading(false);
+          return;
+        }
+        setSuccessMessage('حساب کاربری با موفقیت ساخته شد.');
       }
 
       if (onLoginSuccess) {
@@ -120,7 +118,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         onClose();
       }, 1200);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'خطایی در ارتباط با سرور احراز هویت رخ داد.');
+      setErrorMessage(err?.message || 'خطایی در ارتباط با سرور رخ داد.');
       setIsLoading(false);
     }
   };
@@ -129,7 +127,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
     await signOut();
     setIsLoading(false);
-    setSuccessMessage('با موفقیت از حساب خارج شدید.');
+    setSuccessMessage('با موفقیت از حساب کاربری خارج شدید.');
     setTimeout(() => {
       setSuccessMessage('');
     }, 1500);
@@ -139,7 +137,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-[#0d1627] border border-blue-200 dark:border-blue-900/60 rounded-3xl max-w-md w-full p-6 text-right shadow-2xl space-y-4 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
+      <div className="bg-white dark:bg-[#0d1627] border border-blue-200 dark:border-blue-900/60 rounded-3xl max-w-md w-full p-6 text-right shadow-2xl space-y-4 animate-in zoom-in-95 duration-200 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
           <div className="flex items-center gap-2.5">
@@ -148,34 +146,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
             <div>
               <h3 className="font-black text-base text-slate-900 dark:text-white">
-                احراز هویت با ایمیل (Supabase Auth)
+                حساب کاربری کنکوریار
               </h3>
               <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                نشست کاربری شما روی این گوشی یا سیستم پایدار می‌ماند
+                احراز هویت امن و همگام‌سازی ابری با دیتابیس Supabase
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors cursor-pointer"
           >
             ✕
           </button>
         </div>
 
-        {/* Currently Logged In Banner */}
+        {/* Current User Session Status */}
         {isLoggedIn && (
           <div className="p-3.5 rounded-2xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200/80 dark:border-blue-900/60 space-y-2 text-xs">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
                 <span className="font-extrabold text-blue-900 dark:text-blue-100">
-                  وضعیت فعلی: وارد شده به حساب
+                  وضعیت: وارد شده به حساب
                 </span>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white">
-                {activeRole === 'husband' ? 'آقا (امیرمحمد)' : 'خانم (آرمیتا)'}
+                {activeRole === 'husband' ? `نقش: ${DEFAULT_HUSBAND_NAME}` : `نقش: ${DEFAULT_WIFE_NAME}`}
               </span>
             </div>
 
@@ -194,193 +192,222 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* Quick 1-Click Presets */}
-        <div className="space-y-1.5 text-xs">
-          <label className="block font-bold text-slate-700 dark:text-slate-300">
-            انتخاب سریع حساب کاربری:
-          </label>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => handleSelectPreset('husband')}
-              className={`p-2.5 rounded-xl border text-right transition-all flex items-center justify-between cursor-pointer ${
-                role === 'husband' && email === HUSBAND_CONFIG.email
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 shadow-xs ring-2 ring-blue-400/30'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 hover:border-slate-300'
-              }`}
-            >
-              <div>
-                <p className="font-black text-slate-900 dark:text-white">امیرمحمد</p>
-                <p className="text-[10px] text-slate-500 font-mono truncate">am.moradidaem</p>
-              </div>
-              <div className="p-2 rounded-xl bg-blue-100/70 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400">
-                <Shield className="w-4 h-4" />
-              </div>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleSelectPreset('wife')}
-              className={`p-2.5 rounded-xl border text-right transition-all flex items-center justify-between cursor-pointer ${
-                role === 'wife' && email === WIFE_CONFIG.email
-                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 shadow-xs ring-2 ring-blue-400/30'
-                  : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60 hover:border-slate-300'
-              }`}
-            >
-              <div>
-                <p className="font-black text-slate-900 dark:text-white">آرمیتا</p>
-                <p className="text-[10px] text-slate-500 font-mono truncate">amirtaplans</p>
-              </div>
-              <div className="p-2 rounded-xl bg-sky-100/70 dark:bg-sky-900/40 text-sky-600 dark:text-sky-400">
-                <Sparkles className="w-4 h-4" />
-              </div>
-            </button>
-          </div>
-        </div>
-
-        {/* Tabs: Sign In / Sign Up */}
-        <div className="flex rounded-xl bg-slate-100 dark:bg-slate-900 p-1 text-xs">
+        {/* Mode Selector Tabs */}
+        <div className="p-1 rounded-2xl neu-inset flex gap-1 text-xs font-bold">
           <button
             type="button"
-            onClick={() => {
-              setMode('signin');
-              setErrorMessage('');
-            }}
-            className={`flex-1 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+            onClick={() => { setMode('signin'); setErrorMessage(''); }}
+            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
               mode === 'signin'
-                ? 'bg-white dark:bg-blue-600 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-700'
+                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
             }`}
           >
             <LogIn className="w-3.5 h-3.5" />
-            <span>ورود با ایمیل</span>
+            <span>ورود</span>
           </button>
+
           <button
             type="button"
-            onClick={() => {
-              setMode('signup');
-              setErrorMessage('');
-            }}
-            className={`flex-1 py-1.5 rounded-lg font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+            onClick={() => { setMode('signup'); setErrorMessage(''); }}
+            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
               mode === 'signup'
-                ? 'bg-white dark:bg-blue-600 text-slate-900 dark:text-white shadow-xs'
-                : 'text-slate-500 hover:text-slate-700'
+                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
             }`}
           >
             <UserPlus className="w-3.5 h-3.5" />
             <span>ثبت‌نام جدید</span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => { setMode('reset'); setErrorMessage(''); }}
+            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+              mode === 'reset'
+                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+            }`}
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+            <span>بازیابی رمز</span>
+          </button>
         </div>
+
+        {/* Notifications */}
+        {errorMessage && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 text-xs flex items-center gap-2 animate-in fade-in">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span className="leading-relaxed">{errorMessage}</span>
+          </div>
+        )}
+
+        {successMessage && (
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in">
+            <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+            <span className="leading-relaxed">{successMessage}</span>
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
           {mode === 'signup' && (
-            <div>
-              <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                نام نمایشی:
-              </label>
-              <div className="relative">
+            <>
+              {/* Role selection */}
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  نقش و هویت در رقابت دونفره:
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => { setRole('husband'); setName(DEFAULT_HUSBAND_NAME); }}
+                    className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                      role === 'husband'
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 ring-2 ring-blue-400/30 text-blue-800 dark:text-blue-200 font-extrabold'
+                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    <Shield className="w-4 h-4 text-blue-600" />
+                    <span>همسر ۱ (امیرمحمد)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => { setRole('wife'); setName(DEFAULT_WIFE_NAME); }}
+                    className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer flex items-center justify-center gap-2 ${
+                      role === 'wife'
+                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 ring-2 ring-blue-400/30 text-blue-800 dark:text-blue-200 font-extrabold'
+                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-400'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4 text-sky-500" />
+                    <span>همسر ۲ (آرمیتا)</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Display Name */}
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  نام نمایشی:
+                </label>
+                <div className="relative">
+                  <User className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                  <input
+                    type="text"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="نام شما"
+                    required
+                    className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Pairing code */}
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  کد اختصاصی اتاق دونفره (Pair Code):
+                </label>
                 <input
                   type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full px-3 py-2 pr-9 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-bold focus:outline-none focus:border-blue-500"
+                  value={pairCode}
+                  onChange={(e) => setPairCode(e.target.value.toUpperCase())}
+                  placeholder="مثال: KY-DUO777"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono uppercase text-center tracking-wider focus:outline-hidden focus:border-blue-500"
                 />
-                <User className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+              </div>
+            </>
+          )}
+
+          {/* Email input */}
+          <div>
+            <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+              آدرس ایمیل:
+            </label>
+            <div className="relative">
+              <Mail className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+              <input
+                type="email"
+                dir="ltr"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="example@gmail.com"
+                required
+                className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+              />
+            </div>
+          </div>
+
+          {/* Password input */}
+          {mode !== 'reset' && (
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="font-bold text-slate-700 dark:text-slate-300">
+                  رمز عبور:
+                </label>
+                {mode === 'signin' && (
+                  <button
+                    type="button"
+                    onClick={() => { setMode('reset'); setErrorMessage(''); }}
+                    className="text-[11px] text-blue-600 hover:underline cursor-pointer"
+                  >
+                    رمز عبور را فراموش کردید؟
+                  </button>
+                )}
+              </div>
+              <div className="relative">
+                <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  dir="ltr"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="حداقل ۶ کاراکتر"
+                  required
+                  className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
             </div>
           )}
 
-          <div>
-            <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-              آدرس ایمیل کاربر:
-            </label>
-            <div className="relative">
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => handleEmailChange(e.target.value)}
-                placeholder="example@gmail.com"
-                className="w-full px-3 py-2 pr-9 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-left focus:outline-none focus:border-blue-500"
-                dir="ltr"
-              />
-              <Mail className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            </div>
-          </div>
-
-          <div>
-            <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-              رمز عبور:
-            </label>
-            <div className="relative">
-              <input
-                type="password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="حداقل ۶ کاراکتر"
-                className="w-full px-3 py-2 pr-9 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-200 font-mono text-left focus:outline-none focus:border-blue-500"
-                dir="ltr"
-              />
-              <Key className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-            </div>
-          </div>
-
-          {/* Messages */}
-          {errorMessage && (
-            <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 flex items-center gap-2 text-[11px] animate-in fade-in">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{errorMessage}</span>
-            </div>
-          )}
-
-          {successMessage && (
-            <div className="p-2.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300 flex items-center gap-2 text-[11px] animate-in fade-in">
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              <span>{successMessage}</span>
-            </div>
-          )}
-
-          <div className="pt-2 flex items-center gap-2">
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black transition-all flex items-center justify-center gap-2 shadow-md cursor-pointer disabled:opacity-50"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>در حال پردازش...</span>
-                </>
-              ) : mode === 'signin' ? (
-                <>
-                  <LogIn className="w-4 h-4" />
-                  <span>ورود و ذخیره نشست دستگاه</span>
-                </>
-              ) : (
-                <>
-                  <UserPlus className="w-4 h-4" />
-                  <span>ایجاد حساب کاربری</span>
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 text-slate-700 dark:text-slate-300 font-bold transition-colors cursor-pointer"
-            >
-              انصراف
-            </button>
-          </div>
+          {/* Submit button */}
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold flex items-center justify-center gap-2 shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed mt-4"
+          >
+            {isLoading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>در حال پردازش...</span>
+              </>
+            ) : mode === 'signin' ? (
+              <>
+                <LogIn className="w-4 h-4" />
+                <span>ورود به حساب کاربری</span>
+              </>
+            ) : mode === 'signup' ? (
+              <>
+                <UserPlus className="w-4 h-4" />
+                <span>ایجاد حساب جدید</span>
+              </>
+            ) : (
+              <>
+                <RotateCcw className="w-4 h-4" />
+                <span>ارسال لینک بازیابی رمز عبور</span>
+              </>
+            )}
+          </button>
         </form>
-
-        <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center gap-1.5 text-[10px] text-slate-400">
-          <Sparkles className="w-3.5 h-3.5 text-blue-500" />
-          <span>پشتیبانی کامل از سشن پایدار Supabase و ذخیره‌سازی داده‌های ابری</span>
-        </div>
       </div>
     </div>
   );

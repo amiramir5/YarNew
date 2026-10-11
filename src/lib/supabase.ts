@@ -88,19 +88,18 @@ export async function testSupabaseConnection(customUrl?: string, customKey?: str
     }
 
     const testClient = createClient(url, anonKey);
-    // Ping with a lightweight query
-    const { error } = await testClient.from('couple_live_states').select('count', { count: 'exact', head: true });
+    // Ping with a lightweight query using select('*', { count: 'exact', head: true })
+    const { error } = await testClient.from('couple_live_states').select('*', { count: 'exact', head: true });
     
-    // If table doesn't exist, Supabase returns a 404 or specific code, but connection is alive!
-    if (error && error.code !== 'PGRST116' && error.code !== '42P01') {
-      // If error is relation not found (42P01), connection worked!
-      if (error.message?.includes('does not exist') || error.code === '42P01') {
-        return { ok: true, message: 'ارتباط با سرور Supabase موفقیت‌آمیز است (پایگاه‌داده متصل شد).' };
+    if (error) {
+      // 42P01: Table does not exist yet (schema not created), but server connected successfully
+      if (error.code === '42P01' || error.message?.includes('does not exist')) {
+        return { ok: true, message: 'ارتباط با سرور Supabase موفقیت‌آمیز است (جدول‌ها هنوز با اسکریپت SQL ساخته نشده‌اند).' };
       }
-      return { ok: true, message: `پاسخ از سرور دریافت شد (${error.message})` };
+      return { ok: false, message: `خطای سرور Supabase: ${error.message} (${error.code || 'خطای دسترسی'})` };
     }
 
-    return { ok: true, message: 'اتصال به Supabase پایدار و برقرار است.' };
+    return { ok: true, message: 'اتصال به دیتابیس Supabase پایدار و موفقیت‌آمیز است.' };
   } catch (err: any) {
     return { ok: false, message: err.message || 'خطا در برقراری ارتباط با Supabase' };
   }
