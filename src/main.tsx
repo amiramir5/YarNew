@@ -1,7 +1,14 @@
 import React, { Component, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import App from './App.tsx';
+import '@fontsource/vazirmatn/400.css';
+import '@fontsource/vazirmatn/500.css';
+import '@fontsource/vazirmatn/700.css';
+import '@fontsource/vazirmatn/900.css';
+import '@fontsource/jetbrains-mono/400.css';
+import '@fontsource/jetbrains-mono/500.css';
+import '@fontsource/jetbrains-mono/700.css';
 import './index.css';
+import App from './App.tsx';
 import { initAuthListener } from './lib/auth';
 
 interface Props {

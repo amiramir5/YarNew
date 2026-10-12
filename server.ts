@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
+import { createClient } from '@supabase/supabase-js';
 
 dotenv.config();
 
@@ -13,7 +14,12 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-// CORS configuration for GitHub Pages, local dev, and custom hosts
+// Supabase client for backend authentication verification
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://fsyfdwgtteeyxtoumltz.supabase.co';
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_OAtQRxO5sP6unCn_5BnxMA_Wm0Z7LEN';
+const supabaseAuthClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// CORS configuration: only allowedOrigins + APP_URL + ALLOWED_ORIGINS are allowed
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
   const allowedOrigins = [
@@ -24,15 +30,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     'http://127.0.0.1:5173',
   ];
 
+  if (process.env.APP_URL) {
+    allowedOrigins.push(process.env.APP_URL.trim().replace(/\/+$/, ''));
+  }
+
   if (process.env.ALLOWED_ORIGINS) {
-    const extra = process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim());
+    const extra = process.env.ALLOWED_ORIGINS.split(',').map((s) => s.trim().replace(/\/+$/, ''));
     allowedOrigins.push(...extra);
   }
 
-  if (origin && (allowedOrigins.includes(origin) || origin.endsWith('.github.io') || origin.endsWith('.run.app'))) {
+  if (origin && allowedOrigins.includes(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
-  } else if (!origin) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
   }
 
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -46,6 +54,98 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 app.use(express.json({ limit: '15mb' }));
+
+// In-memory rate limiting map: maximum 20 requests per minute per user ID or IP
+interface RateLimitEntry {
+  count: number;
+  resetAt: number;
+}
+const rateLimitMap = new Map<string, RateLimitEntry>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of rateLimitMap.entries()) {
+    if (now > entry.resetAt) {
+      rateLimitMap.delete(key);
+    }
+  }
+}, 60000);
+
+// Extend Express Request type to hold authenticated user
+declare global {
+  namespace Express {
+    interface Request {
+      aiUserId?: string;
+    }
+  }
+}
+
+// Authentication & Rate-Limiting middleware for /api/ai/* routes
+app.use('/api/ai', async (req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'OPTIONS') return next();
+
+  // 1. Authentication Check
+  const customApiKey = req.body?.apiKey;
+  let authenticatedUserId: string | null = null;
+
+  if (customApiKey && typeof customApiKey === 'string' && customApiKey.trim().length > 0) {
+    // User provided personal API key -> login not required
+  } else {
+    // Using server GEMINI_API_KEY -> Authorization: Bearer <access_token> required
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+
+    if (!token) {
+      return res.status(401).json({
+        ok: false,
+        error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
+      });
+    }
+
+    try {
+      const { data: { user }, error } = await supabaseAuthClient.auth.getUser(token);
+      if (error || !user) {
+        return res.status(401).json({
+          ok: false,
+          error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
+        });
+      }
+      authenticatedUserId = user.id;
+      req.aiUserId = user.id;
+    } catch (authErr) {
+      console.error('Supabase token verification error:', authErr);
+      return res.status(401).json({
+        ok: false,
+        error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
+      });
+    }
+  }
+
+  // 2. Rate Limiting Check: max 20 requests/min per user id or IP
+  const clientIp =
+    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+    req.ip ||
+    req.socket.remoteAddress ||
+    'unknown';
+  const rateLimitKey = authenticatedUserId ? `user:${authenticatedUserId}` : `ip:${clientIp}`;
+
+  const now = Date.now();
+  const entry = rateLimitMap.get(rateLimitKey);
+
+  if (!entry || now > entry.resetAt) {
+    rateLimitMap.set(rateLimitKey, { count: 1, resetAt: now + 60000 });
+  } else {
+    if (entry.count >= 20) {
+      return res.status(429).json({
+        ok: false,
+        error: 'سهمیه موقتاً تمام شده است. لطفاً یک دقیقه دیگر تلاش کنید.',
+      });
+    }
+    entry.count += 1;
+  }
+
+  next();
+});
 
 // Safe Health Check Endpoint
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -79,13 +179,25 @@ function getGeminiClient(customKey?: string) {
   });
 }
 
-// Verified candidate models (active in @google/genai)
-const CANDIDATE_MODELS = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'];
+// Models configuration: process.env.GEMINI_MODEL (default 'gemini-3.5-flash'), 'gemini-3.1-flash-lite', 'gemini-2.5-flash'
+const CANDIDATE_MODELS = Array.from(
+  new Set([
+    process.env.GEMINI_MODEL || 'gemini-3.5-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+  ])
+);
 
 async function generateWithFallback(ai: GoogleGenAI, params: any, preferredModel?: string) {
-  const modelsToTry = preferredModel && CANDIDATE_MODELS.includes(preferredModel)
-    ? [preferredModel, ...CANDIDATE_MODELS.filter((m) => m !== preferredModel)]
-    : (preferredModel ? [preferredModel, ...CANDIDATE_MODELS] : CANDIDATE_MODELS);
+  // Client's model is only used if it is in the approved candidate list
+  const validPreferred =
+    preferredModel && typeof preferredModel === 'string' && CANDIDATE_MODELS.includes(preferredModel.trim())
+      ? preferredModel.trim()
+      : undefined;
+
+  const modelsToTry = validPreferred
+    ? [validPreferred, ...CANDIDATE_MODELS.filter((m) => m !== validPreferred)]
+    : CANDIDATE_MODELS;
 
   let lastError: any = null;
   for (const model of modelsToTry) {
@@ -97,9 +209,45 @@ async function generateWithFallback(ai: GoogleGenAI, params: any, preferredModel
       return response;
     } catch (err: any) {
       lastError = err;
-      console.warn(`Model ${model} attempt failed:`, err?.message || err);
-      // If authentication failure, don't keep cycling aliases
-      if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('UNAUTHENTICATED') || err?.message?.includes('API_KEY_INVALID')) {
+      const status = err?.status || (err?.statusCode ? Number(err.statusCode) : 0);
+      const msg = String(err?.message || '');
+
+      console.warn(`Model ${model} attempt failed:`, msg || err);
+
+      // 400 and 401/403/API_KEY_INVALID: abort immediately with clear Persian message
+      if (
+        status === 401 ||
+        status === 403 ||
+        msg.includes('401') ||
+        msg.includes('403') ||
+        msg.includes('API_KEY_INVALID') ||
+        msg.includes('UNAUTHENTICATED') ||
+        msg.includes('PERMISSION_DENIED')
+      ) {
+        const authErr = new Error('کلید دسترسی Gemini نامعتبر یا فاقد دسترسی است.');
+        (authErr as any).status = 401;
+        throw authErr;
+      }
+
+      if (status === 400 || msg.includes('400') || msg.includes('INVALID_ARGUMENT')) {
+        const badReqErr = new Error('درخواست ارسالی به مدل هوش مصنوعی نامعتبر است.');
+        (badReqErr as any).status = 400;
+        throw badReqErr;
+      }
+
+      // Only retry for 404/NOT_FOUND, 429, and 503
+      const isRetryable =
+        status === 404 ||
+        status === 429 ||
+        status === 503 ||
+        msg.includes('404') ||
+        msg.includes('NOT_FOUND') ||
+        msg.includes('429') ||
+        msg.includes('RESOURCE_EXHAUSTED') ||
+        msg.includes('503') ||
+        msg.includes('UNAVAILABLE');
+
+      if (!isRetryable) {
         break;
       }
     }
@@ -107,7 +255,47 @@ async function generateWithFallback(ai: GoogleGenAI, params: any, preferredModel
   throw lastError;
 }
 
-const SYSTEM_PROMPT = `Act as an expert Iranian educational/career counselor specializing in Iran's university admissions system (Konkur, Sanjesh, academic records, quotas, ranking, major selection, and admission outcomes).
+// JSON parsing helper that removes markdown fences and safely parses
+function parseModelJson<T = any>(text: string): T {
+  let cleaned = (text || '').trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
+    cleaned = cleaned.replace(/\s*```$/, '');
+  }
+  cleaned = cleaned.trim();
+  return JSON.parse(cleaned) as T;
+}
+
+// Error formatting helper to avoid exposing raw error messages to the client
+function formatAiError(err: any): { status: number; error: string } {
+  const status = err?.status || (err?.statusCode ? Number(err.statusCode) : 500);
+  const msg = String(err?.message || '');
+
+  if (status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('سهمیه')) {
+    return { status: 429, error: 'سهمیه موقتاً تمام شده است' };
+  }
+  if (
+    status === 401 ||
+    status === 403 ||
+    msg.includes('401') ||
+    msg.includes('403') ||
+    msg.includes('API_KEY_INVALID') ||
+    msg.includes('UNAUTHENTICATED') ||
+    msg.includes('PERMISSION_DENIED')
+  ) {
+    return { status: 401, error: 'کلید دسترسی Gemini نامعتبر یا فاقد دسترسی است.' };
+  }
+  if (status === 400 || msg.includes('400') || msg.includes('INVALID_ARGUMENT')) {
+    return { status: 400, error: 'درخواست ارسالی به مدل هوش مصنوعی نامعتبر است.' };
+  }
+  if (status === 502) {
+    return { status: 502, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' };
+  }
+  return { status: 500, error: 'خطا در ارتباط با مدل هوش مصنوعی. لطفاً دوباره تلاش کنید.' };
+}
+
+// System instructions
+const COACH_SYSTEM_PROMPT = `Act as an expert Iranian educational/career counselor specializing in Iran's university admissions system (Konkur, Sanjesh, academic records, quotas, ranking, major selection, and admission outcomes).
 
 Your information must be genuinely up to date:
 - Before answering any time-sensitive question, search the web and verify the latest information, preferably from official Sanjesh, Ministry of Education, universities, and official notices.
@@ -134,6 +322,8 @@ For every important factual claim, provide the source and URL. If reliable evide
 
 Respond in Persian.`;
 
+const DEFAULT_SYSTEM_INSTRUCTION = 'تو طراح و مدرس کنکور تجربی ایران هستی. فقط JSON معتبر مطابق ساختار خواسته‌شده برگردان.';
+
 // AI API: Topic Explanation
 app.post('/api/ai/explain', async (req: Request, res: Response) => {
   try {
@@ -159,28 +349,31 @@ app.post('/api/ai/explain', async (req: Request, res: Response) => {
 }`;
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+      contents: userPrompt,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.3,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Explain parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
 
-    // Validate required fields
-    if (!parsed.title || !Array.isArray(parsed.key_points)) {
-      return res.status(502).json({ ok: false, error: 'پاسخ دریافتی از هوش مصنوعی ساختار استاندارد ندارد.' });
+    if (!parsed || !parsed.title || !Array.isArray(parsed.key_points)) {
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
     }
 
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Explain error:', err?.message || err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || 'خطا در ارتباط با مدل هوش مصنوعی. لطفاً اتصال اینترنت یا کلید API خود را بررسی کنید.',
-    });
+    console.error('Explain error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -254,38 +447,41 @@ ${sourceText.trim().slice(0, 10000)}
     }
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+      contents: userPrompt,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.4,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{"questions":[]}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Quiz parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
 
-    // Validate questions schema and correct_index bounds
-    if (!Array.isArray(parsed.questions) || parsed.questions.length === 0) {
-      return res.status(502).json({ ok: false, error: 'پاسخ هوش مصنوعی شامل لیست سوالات معتبر نبود.' });
+    if (!parsed || !Array.isArray(parsed.questions) || parsed.questions.length === 0) {
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
     }
 
     for (const q of parsed.questions) {
       if (!q.stem || !Array.isArray(q.options) || q.options.length < 2) {
-        return res.status(502).json({ ok: false, error: 'یکی از سوالات دارای گزینه‌های ناقص است.' });
+        return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
       }
       const cIdx = Number(q.correct_index);
       if (isNaN(cIdx) || cIdx < 0 || cIdx >= q.options.length) {
-        q.correct_index = 0; // Guard against out of bounds
+        q.correct_index = 0;
       }
     }
 
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Quiz error:', err?.message || err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || 'خطا در تولید آزمون هوشمند.',
-    });
+    console.error('Quiz error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -315,22 +511,27 @@ app.post('/api/ai/performance-insights', async (req: Request, res: Response) => 
 }`;
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+      contents: userPrompt,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.3,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Performance insights parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
+
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Performance insights error:', err?.message || err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || 'خطا در دریافت تحلیل عملکرد از هوش مصنوعی.',
-    });
+    console.error('Performance insights error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -366,27 +567,31 @@ app.post('/api/ai/slides', async (req: Request, res: Response) => {
 }`;
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+      contents: userPrompt,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.3,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Slides parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
 
-    if (!parsed.deck_title || !Array.isArray(parsed.slides)) {
-      return res.status(502).json({ ok: false, error: 'پاسخ اسلایدها ساختار نامعتبر دارد.' });
+    if (!parsed || !parsed.deck_title || !Array.isArray(parsed.slides)) {
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
     }
 
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Slides error:', err?.message || err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || 'خطا در ساخت اسلایدهای آموزشی.',
-    });
+    console.error('Slides error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -419,19 +624,27 @@ ${JSON.stringify(sample, null, 2)}
 }`;
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${userPrompt}`,
+      contents: userPrompt,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.3,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Mistakes analysis parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
+
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Mistakes analysis error:', err?.message || err);
-    return res.status(500).json({ ok: false, error: err.message || 'خطا در تحلیل شناختی اشتباهات' });
+    console.error('Mistakes analysis error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -457,8 +670,9 @@ ${(history || []).slice(-6).map((h: any) => `${h.role === 'user' ? 'داوطلب
 - ساختاربندی و دسته‌بندی منظم و شفاف با تیترها و نکات کلیدی به زبان فارسی ارائه کن.`;
 
     const response = await generateWithFallback(ai, {
-      contents: `${SYSTEM_PROMPT}\n\n${promptText}`,
+      contents: promptText,
       config: {
+        systemInstruction: COACH_SYSTEM_PROMPT,
         temperature: 0.3,
         tools: [{ googleSearch: {} }],
       },
@@ -466,8 +680,9 @@ ${(history || []).slice(-6).map((h: any) => `${h.role === 'user' ? 'داوطلب
 
     return res.json({ ok: true, text: response.text || '' });
   } catch (err: any) {
-    console.error('Coach error:', err?.message || err);
-    return res.status(500).json({ ok: false, error: err.message || 'خطا در ارتباط با مشاور هوشمند' });
+    console.error('Coach error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -508,8 +723,9 @@ app.post('/api/ai/ocr', async (req: Request, res: Response) => {
 
     return res.json({ ok: true, text: (response.text || '').trim() });
   } catch (err: any) {
-    console.error('OCR error:', err?.message || err);
-    return res.status(500).json({ ok: false, error: err.message || 'خطا در استخراج متن از تصویر' });
+    console.error('OCR error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -563,30 +779,34 @@ app.post('/api/ai/photo-solve', async (req: Request, res: Response) => {
   "study_tip": "توصیه طلایی برای یادآوری این مبحث در جلسه آزمون"
 }`;
 
-    contents.push({ text: `${SYSTEM_PROMPT}\n\n${userPrompt}` });
+    contents.push({ text: userPrompt });
 
     const response = await generateWithFallback(ai, {
       contents,
       config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
         temperature: 0.2,
         responseMimeType: 'application/json',
       },
     }, model);
 
-    const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = parseModelJson(response.text || '');
+    } catch (parseErr) {
+      console.error('Photo solve parseModelJson failed:', parseErr, 'Raw:', response.text);
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
+    }
 
-    if (!parsed.detailed_explanation && !parsed.correct_option) {
-      return res.status(502).json({ ok: false, error: 'پاسخ دریافتی برای سوال تصویری ناقص است.' });
+    if (!parsed || (!parsed.detailed_explanation && !parsed.correct_option)) {
+      return res.status(502).json({ ok: false, error: 'پاسخ مدل قابل خواندن نبود، دوباره تلاش کنید' });
     }
 
     return res.json({ ok: true, data: parsed });
   } catch (err: any) {
-    console.error('Photo solve error:', err?.message || err);
-    return res.status(500).json({
-      ok: false,
-      error: err?.message || 'خطا در حل تصویری سوال. لطفاً وضوح تصویر یا اتصال هوش مصنوعی را بررسی کنید.',
-    });
+    console.error('Photo solve error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 
@@ -627,40 +847,9 @@ app.post('/api/ai/extract-doc', async (req: Request, res: Response) => {
 
     return res.json({ ok: true, text: (response.text || '').trim() });
   } catch (err: any) {
-    console.error('Extract doc error:', err?.message || err);
-    return res.status(500).json({ ok: false, error: err.message || 'خطا در خواندن فایل یا PDF کتاب' });
-  }
-});
-
-// AI API: Test OpenRouter Connection
-app.post('/api/ai/test-openrouter', async (req: Request, res: Response) => {
-  try {
-    const { apiKey, model = 'openrouter/free' } = req.body;
-    if (!apiKey) {
-      return res.status(400).json({ ok: false, error: 'کلید OpenRouter وارد نشده است' });
-    }
-
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey.trim()}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model || 'openrouter/free',
-        messages: [{ role: 'user', content: 'پاسخ کوتاه بده: سلام' }],
-        max_tokens: 15,
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(response.status).json({ ok: false, error: `خطای OpenRouter (${response.status}): ${errText.slice(0, 100)}` });
-    }
-
-    return res.json({ ok: true, message: 'اتصال به OpenRouter با موفقیت تایید شد.' });
-  } catch (err: any) {
-    return res.status(500).json({ ok: false, error: err.message || 'خطا در اتصال به OpenRouter' });
+    console.error('Extract doc error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
   }
 });
 

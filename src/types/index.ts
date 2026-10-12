@@ -132,12 +132,8 @@ export interface AppSettings {
   vibrationEnabled: boolean;
   deviceId: string;
   ai: {
-    primaryProvider: 'gemini' | 'openrouter';
-    fallbackEnabled: boolean;
     geminiKey: string;
     geminiModel: string;
-    openrouterKey: string;
-    openrouterModel: string;
     coachPlanGoal?: string;
   };
   partnerLinkBackup?: {

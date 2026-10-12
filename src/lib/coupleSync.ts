@@ -313,6 +313,105 @@ export async function fetchMyPairStatus(): Promise<{
 }
 
 /**
+ * Unified calculation of live partner state from a database row.
+ * Eliminates duplication between fetchRemotePartnerState and postgres_changes realtime handler.
+ * Fixes double-counting bug in todaySeconds and handles background study timer (up to 3 hours).
+ */
+export function computePartnerLive(
+  row: any,
+  settings: CoupleSettings,
+  correctedNow: number
+): CoupleMemberState {
+  const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
+  const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
+
+  const updatedAtMs =
+    typeof row?.updated_at === 'number'
+      ? row.updated_at
+      : row?.updated_at
+      ? new Date(row.updated_at).getTime()
+      : correctedNow;
+
+  const diffMs = Math.max(0, correctedNow - updatedAtMs);
+
+  const rawStudying = Boolean(row?.is_studying);
+  const hasTimer = Boolean(row?.timer_started_at);
+  const isOnline = Boolean(row?.online);
+
+  const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
+  const FORTY_FIVE_SEC_MS = 45000;
+
+  let isStudying = false;
+  let online = false;
+
+  if (rawStudying && hasTimer && !isOnline) {
+    // App in background, timer running: active up to 3 hours from updated_at
+    if (diffMs <= THREE_HOURS_MS) {
+      isStudying = true;
+      online = false;
+    } else {
+      isStudying = false;
+      online = false;
+    }
+  } else if (rawStudying && isOnline) {
+    // Active studying foreground: stale if heartbeat older than 45 seconds
+    if (diffMs <= FORTY_FIVE_SEC_MS) {
+      isStudying = true;
+      online = true;
+    } else {
+      isStudying = false;
+      online = false;
+    }
+  } else {
+    // Stopped / resting
+    const isStale = diffMs > FORTY_FIVE_SEC_MS;
+    isStudying = false;
+    online = isStale ? false : isOnline;
+  }
+
+  const sessionElapsed = Number(row?.session_elapsed_seconds) || 0;
+  const todaySec = Number(row?.today_seconds) || 0;
+  const accumulated = Number(row?.accumulated_seconds) || 0;
+
+  let liveSession = sessionElapsed;
+  let liveToday = todaySec;
+
+  if (isStudying) {
+    if (row?.timer_started_at) {
+      const extra = Math.max(0, Math.floor((correctedNow - Number(row.timer_started_at)) / 1000));
+      liveSession = accumulated + extra;
+    } else {
+      const extraSeconds = Math.max(0, Math.floor((correctedNow - updatedAtMs) / 1000));
+      liveSession = sessionElapsed + extraSeconds;
+    }
+    const baseToday = Math.max(0, todaySec - sessionElapsed);
+    liveToday = baseToday + liveSession;
+  }
+
+  const partnerName =
+    row?.display_name && row.display_name !== settings.myName
+      ? row.display_name
+      : settings.partnerName;
+
+  return {
+    role: partnerRole,
+    name: partnerName,
+    avatar: '3d-badge',
+    isStudying,
+    online,
+    subject: row?.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
+    subjectName: row?.subject_name || defaultSubject,
+    timerStartedAt: row?.timer_started_at ? Number(row.timer_started_at) : null,
+    accumulatedSeconds: accumulated,
+    sessionElapsedSeconds: liveSession,
+    todaySeconds: liveToday,
+    todayTests: Number(row?.today_tests) || 0,
+    studyDay: row?.study_day || studyDayKey(),
+    lastHeartbeat: updatedAtMs,
+  };
+}
+
+/**
  * Singleton Managed Realtime Channel with Reconnect Backoff & Broadcast Queue
  */
 let sharedPairChannel: any = null;
@@ -407,41 +506,9 @@ export function getOrCreatePairChannel(pairCode: string): any {
         const settings = getCoupleSettings();
         const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
         if (row.role === partnerRole) {
-          const updatedAtMs = new Date(row.updated_at || Date.now()).getTime();
           const serverOffset = getServerOffset();
           const correctedNow = Date.now() + serverOffset;
-          const isStale = correctedNow - updatedAtMs > 45000;
-          const isStudying = Boolean(row.is_studying) && !isStale;
-
-          let liveSession = Number(row.session_elapsed_seconds) || 0;
-          let liveToday = Number(row.today_seconds) || 0;
-
-          if (isStudying && row.timer_started_at) {
-            const extra = Math.max(0, Math.floor((correctedNow - Number(row.timer_started_at)) / 1000));
-            liveSession = (Number(row.accumulated_seconds) || 0) + extra;
-          } else if (isStudying && !isStale) {
-            const extraSeconds = Math.max(0, Math.floor((correctedNow - updatedAtMs) / 1000));
-            liveSession += extraSeconds;
-            liveToday += extraSeconds;
-          }
-
-          const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
-          const updatedState: CoupleMemberState = {
-            role: partnerRole,
-            name: row.display_name && row.display_name !== settings.myName ? row.display_name : settings.partnerName,
-            avatar: '3d-badge',
-            isStudying,
-            online: isStale ? false : Boolean(row.online),
-            subject: row.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
-            subjectName: row.subject_name || defaultSubject,
-            timerStartedAt: row.timer_started_at ? Number(row.timer_started_at) : null,
-            accumulatedSeconds: Number(row.accumulated_seconds) || 0,
-            sessionElapsedSeconds: liveSession,
-            todaySeconds: liveToday,
-            todayTests: Number(row.today_tests) || 0,
-            studyDay: row.study_day || studyDayKey(),
-            lastHeartbeat: updatedAtMs,
-          };
+          const updatedState = computePartnerLive(row, settings, correctedNow);
           savePartnerState(updatedState);
           realtimeSubscribers.forEach((cb) => cb(updatedState));
         }
@@ -682,7 +749,6 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
   const settings = getCoupleSettings();
   if (!settings.pairCode) return null;
   const partnerRole = settings.myRole === 'husband' ? 'wife' : 'husband';
-  const defaultSubject = partnerRole === 'wife' ? 'زیست‌شناسی' : 'شیمی';
 
   try {
     const supabase = getSupabaseClient();
@@ -697,48 +763,9 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
 
     if (error || !data) return null;
 
-    const serverTimeStr = data.updated_at || new Date().toISOString();
-    const updatedAtMs = new Date(serverTimeStr).getTime();
-
     const serverOffset = getServerOffset();
-    const nowCompensated = Date.now() + serverOffset;
-    const isStale = nowCompensated - updatedAtMs > 45000;
-    const isStudying = Boolean(data.is_studying) && !isStale;
-
-    let liveSession = Number(data.session_elapsed_seconds) || 0;
-    let liveToday = Number(data.today_seconds) || 0;
-
-    if (isStudying && data.timer_started_at) {
-      const extra = Math.max(0, Math.floor((nowCompensated - Number(data.timer_started_at)) / 1000));
-      liveSession = (Number(data.accumulated_seconds) || 0) + extra;
-      liveToday += extra;
-    } else if (isStudying && !isStale) {
-      const extraSeconds = Math.max(0, Math.floor((nowCompensated - updatedAtMs) / 1000));
-      liveSession += extraSeconds;
-      liveToday += extraSeconds;
-    }
-
-    const partnerName =
-      data.display_name && data.display_name !== settings.myName
-        ? data.display_name
-        : settings.partnerName;
-
-    const partnerState: CoupleMemberState = {
-      role: partnerRole,
-      name: partnerName,
-      avatar: '3d-badge',
-      isStudying,
-      online: isStale ? false : Boolean(data.online),
-      subject: data.subject || (partnerRole === 'wife' ? 'bio' : 'chem'),
-      subjectName: data.subject_name || defaultSubject,
-      timerStartedAt: data.timer_started_at ? Number(data.timer_started_at) : null,
-      accumulatedSeconds: Number(data.accumulated_seconds) || 0,
-      sessionElapsedSeconds: liveSession,
-      todaySeconds: liveToday,
-      todayTests: Number(data.today_tests) || 0,
-      studyDay: data.study_day || studyDayKey(),
-      lastHeartbeat: updatedAtMs,
-    };
+    const correctedNow = Date.now() + serverOffset;
+    const partnerState = computePartnerLive(data, settings, correctedNow);
 
     savePartnerState(partnerState);
     return partnerState;

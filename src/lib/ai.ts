@@ -5,6 +5,7 @@ import {
   TopicExplanation,
 } from '../types';
 import { loadSettings } from './storage';
+import { getSupabaseClient } from './supabase';
 
 /**
  * Returns configured backend API base URL from VITE_API_BASE_URL
@@ -14,6 +15,28 @@ export function getApiBaseUrl(): string {
     return import.meta.env.VITE_API_BASE_URL.replace(/\/+$/, '');
   }
   return '';
+}
+
+/**
+ * Creates authentication and content-type headers for AI backend requests
+ */
+async function authHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  try {
+    const client = getSupabaseClient();
+    if (client) {
+      const { data } = await client.auth.getSession();
+      const token = data?.session?.access_token;
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to retrieve Supabase session token for AI request:', err);
+  }
+  return headers;
 }
 
 /**
@@ -42,7 +65,7 @@ export async function explainTopic(
   const url = buildApiUrl('/api/ai/explain');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ topic, subject, apiKey, model: targetModel }),
   });
 
@@ -75,7 +98,7 @@ export async function generateQuiz(
   const url = buildApiUrl('/api/ai/quiz');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ subject, chapter, topic, level, count, sourceText, apiKey, model: targetModel }),
   });
 
@@ -117,7 +140,7 @@ export async function generateSlides(
   const url = buildApiUrl('/api/ai/slides');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify(payload),
   });
 
@@ -145,7 +168,7 @@ export async function analyzeMistakes(
   const url = buildApiUrl('/api/ai/mistakes-analysis');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ items, apiKey, model: targetModel }),
   });
 
@@ -176,7 +199,7 @@ export async function consultCoach(
   const url = buildApiUrl('/api/ai/coach');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ message, context, mode, history, apiKey, model: targetModel }),
   });
 
@@ -201,7 +224,7 @@ export async function extractOcrText(imageBase64: string, model?: string): Promi
   const url = buildApiUrl('/api/ai/ocr');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ imageBase64, apiKey, model: targetModel }),
   });
 
@@ -243,7 +266,7 @@ export async function solvePhotoQuestion(params: {
   const url = buildApiUrl('/api/ai/photo-solve');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ ...params, apiKey, model: targetModel }),
   });
 
@@ -281,7 +304,7 @@ export async function getPerformanceInsights(metrics: {
   const url = buildApiUrl('/api/ai/performance-insights');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ metrics, apiKey, model: targetModel }),
   });
 
@@ -306,7 +329,7 @@ export async function extractDocumentText(fileBase64: string, mimeType: string, 
   const url = buildApiUrl('/api/ai/extract-doc');
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: await authHeaders(),
     body: JSON.stringify({ fileBase64, mimeType, apiKey, model: targetModel }),
   });
 
@@ -324,40 +347,27 @@ export async function extractDocumentText(fileBase64: string, mimeType: string, 
 }
 
 export async function testAiConnection(
-  provider: 'gemini' | 'openrouter',
-  customKey?: string,
-  model?: string
+  customKeyOrProvider?: string,
+  modelOrKey?: string,
+  extraModel?: string
 ): Promise<{ ok: boolean; message: string }> {
+  let key: string | undefined;
+  let targetModel: string | undefined;
+
+  if (customKeyOrProvider === 'gemini') {
+    key = modelOrKey;
+    targetModel = extraModel;
+  } else {
+    key = customKeyOrProvider;
+    targetModel = modelOrKey;
+  }
+
   try {
-    if (provider === 'gemini') {
-      const res = await explainTopic('سینتیک شیمیایی', 'شیمی', customKey, model);
-      if (res && res.title) {
-        return { ok: true, message: 'اتصال هوش مصنوعی Gemini تایید شد و پاسخ آزمایشی با موفقیت دریافت گردید.' };
-      }
-      return { ok: false, message: 'پاسخ دریافتی ناقص بود.' };
-    } else {
-      const settings = loadSettings();
-      const openKey = customKey || settings.ai.openrouterKey;
-      if (!openKey) {
-        return { ok: false, message: 'لطفاً ابتدا کلید OpenRouter را وارد نمایید.' };
-      }
-
-      const url = buildApiUrl('/api/ai/test-openrouter');
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          apiKey: openKey,
-          model: model || settings.ai.openrouterModel || 'openrouter/free',
-        }),
-      });
-
-      const json = await res.json();
-      if (!res.ok || !json.ok) {
-        return { ok: false, message: json.error || 'خطا در احراز هویت OpenRouter' };
-      }
-      return { ok: true, message: json.message || 'اتصال OpenRouter تایید شد.' };
+    const res = await explainTopic('سینتیک شیمیایی', 'شیمی', key, targetModel);
+    if (res && res.title) {
+      return { ok: true, message: 'اتصال هوش مصنوعی Gemini تایید شد و پاسخ آزمایشی با موفقیت دریافت گردید.' };
     }
+    return { ok: false, message: 'پاسخ دریافتی ناقص بود.' };
   } catch (err: any) {
     return { ok: false, message: err.message || 'خطا در برقراری ارتباط با مدل هوش مصنوعی' };
   }

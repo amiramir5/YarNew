@@ -29,6 +29,12 @@ export function uid(): string {
   return 'ky-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 9);
 }
 
+export const ALLOWED_GEMINI_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash',
+] as const;
+
 export function getDefaultSettings(): AppSettings {
   return {
     theme: 'light',
@@ -40,12 +46,8 @@ export function getDefaultSettings(): AppSettings {
     vibrationEnabled: true,
     deviceId: uid(),
     ai: {
-      primaryProvider: 'gemini',
-      fallbackEnabled: true,
       geminiKey: '',
-      geminiModel: 'gemini-3.8-flash',
-      openrouterKey: '',
-      openrouterModel: 'openrouter/free',
+      geminiModel: 'gemini-3.5-flash',
     },
   };
 }
@@ -192,14 +194,22 @@ export function saveProgress(progress: ProgressEntry[], customEmail?: string): v
 }
 
 export function loadSettings(): AppSettings {
-  const current = getStored<AppSettings>(STORAGE_KEYS.SETTINGS, getDefaultSettings());
-  // Merge with defaults to ensure all fields exist
+  const current = getStored<any>(STORAGE_KEYS.SETTINGS, getDefaultSettings());
+  const defaults = getDefaultSettings();
+
+  const savedModel = current?.ai?.geminiModel;
+  const validModel =
+    typeof savedModel === 'string' && (ALLOWED_GEMINI_MODELS as readonly string[]).includes(savedModel)
+      ? savedModel
+      : defaults.ai.geminiModel;
+
   const merged: AppSettings = {
-    ...getDefaultSettings(),
+    ...defaults,
     ...current,
     ai: {
-      ...getDefaultSettings().ai,
-      ...(current.ai || {}),
+      geminiKey: typeof current?.ai?.geminiKey === 'string' ? current.ai.geminiKey : defaults.ai.geminiKey,
+      geminiModel: validModel,
+      ...(current?.ai?.coachPlanGoal ? { coachPlanGoal: current.ai.coachPlanGoal } : {}),
     },
   };
   return merged;
@@ -241,7 +251,6 @@ export function exportAllDataJson(): void {
     ai: {
       ...settings.ai,
       geminiKey: '',
-      openrouterKey: '',
     },
   };
 
@@ -300,7 +309,6 @@ export function importAllDataJson(jsonText: string): boolean {
           ...cur.ai,
           ...(d.settings.ai || {}),
           geminiKey: cur.ai.geminiKey,
-          openrouterKey: cur.ai.openrouterKey,
         },
       });
     }

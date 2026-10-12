@@ -281,7 +281,11 @@ export const TimerView: React.FC<TimerViewProps> = ({
                       : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                   }`}
                 >
-                  {partnerState.isStudying ? 'در حال مطالعه زنده' : 'استراحت / آماده پارت'}
+                  {partnerState.isStudying
+                    ? partnerState.online
+                      ? 'در حال مطالعه زنده'
+                      : 'در حال مطالعه (پس‌زمینه)'
+                    : 'استراحت / آماده پارت'}
                 </span>
               </div>
 

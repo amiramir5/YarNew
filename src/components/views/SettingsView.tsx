@@ -58,12 +58,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [goalTests, setGoalTests] = useState(settings.dailyGoalTests);
 
   // AI settings
-  const [primaryProvider, setPrimaryProvider] = useState(settings.ai.primaryProvider);
   const [geminiKey, setGeminiKey] = useState(settings.ai.geminiKey);
   const [geminiModel, setGeminiModel] = useState(settings.ai.geminiModel);
-  const [openrouterKey, setOpenrouterKey] = useState(settings.ai.openrouterKey);
-  const [openrouterModel, setOpenrouterModel] = useState(settings.ai.openrouterModel || 'openrouter/free');
-  const [fallbackEnabled, setFallbackEnabled] = useState(settings.ai.fallbackEnabled);
 
   // Supabase configuration state
   const initialSb = getSupabaseConfig();
@@ -73,7 +69,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [isTestingSb, setIsTestingSb] = useState(false);
 
   const [showGeminiKey, setShowGeminiKey] = useState(false);
-  const [showOrKey, setShowOrKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
@@ -102,12 +97,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       dailyGoalTests: goalTests,
       ai: {
         ...settings.ai,
-        primaryProvider,
         geminiKey: geminiKey.trim(),
         geminiModel,
-        openrouterKey: openrouterKey.trim(),
-        openrouterModel,
-        fallbackEnabled,
       },
     };
     onUpdateSettings(updatedSettings);
@@ -124,9 +115,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleTestAi = async () => {
     setIsTesting(true);
     setTestResult(null);
-    const key = primaryProvider === 'gemini' ? geminiKey : openrouterKey;
-    const model = primaryProvider === 'gemini' ? geminiModel : openrouterModel;
-    const res = await testAiConnection(primaryProvider, key, model);
+    const res = await testAiConnection(geminiKey, geminiModel);
     setTestResult(res);
     setIsTesting(false);
   };
@@ -257,130 +246,65 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
             <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
             <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-              تنظیمات موتور هوش مصنوعی (Gemini Flash & OpenRouter)
+              تنظیمات موتور هوش مصنوعی (Google Gemini Flash)
             </h3>
           </div>
 
           <div className="space-y-4">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
-                  سرویس‌دهنده هوش مصنوعی
-                </label>
-                <select
-                  value={primaryProvider}
-                  onChange={(e: any) => setPrimaryProvider(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
-                >
-                  <option value="gemini">Google Gemini Flash (پیشنهادی و پرسرعت)</option>
-                  <option value="openrouter">OpenRouter (روتر مدل‌های معتبر)</option>
-                </select>
-              </div>
-
-              {primaryProvider === 'gemini' ? (
-                <div>
-                  <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
-                    نسخه مدل Gemini (منحصراً فلش)
-                  </label>
-                  <select
-                    value={geminiModel}
-                    onChange={(e) => setGeminiModel(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
-                  >
-                    <option value="gemini-3.8-flash">Gemini 3.8 Flash (پیشنهادی)</option>
-                    <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
-                    <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
-                    <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-                  </select>
-                </div>
-              ) : (
-                <div>
-                  <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
-                    مدل منتخب OpenRouter
-                  </label>
-                  <select
-                    value={openrouterModel}
-                    onChange={(e) => setOpenrouterModel(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs"
-                  >
-                    <option value="openrouter/free">openrouter/free (مدل‌های رایگان OpenRouter)</option>
-                    <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (رایگان)</option>
-                    <option value="deepseek/deepseek-r1:free">deepseek/deepseek-r1:free (رایگان استدلالی)</option>
-                    <option value="deepseek/deepseek-chat:free">deepseek/deepseek-chat:free (رایگان)</option>
-                    <option value="google/gemini-2.0-flash-exp:free">google/gemini-2.0-flash-exp:free (رایگان)</option>
-                    <option value="qwen/qwen-2.5-72b-instruct:free">qwen/qwen-2.5-72b-instruct:free (رایگان)</option>
-                    <option value="openrouter/auto">openrouter/auto (مسیریاب خودکار)</option>
-                  </select>
-                </div>
-              )}
+            <div>
+              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
+                نسخه مدل Gemini (منحصراً فلش)
+              </label>
+              <select
+                value={geminiModel}
+                onChange={(e) => setGeminiModel(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
+              >
+                <option value="gemini-3.5-flash">gemini-3.5-flash (پیشنهادی)</option>
+                <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+              </select>
             </div>
 
-            {primaryProvider === 'openrouter' && (
-              <div>
-                <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
-                  کلید دسترسی OpenRouter API Key
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
+                  کلید اختصاصی Google Gemini API Key
                 </label>
-                <div className="relative">
-                  <input
-                    type={showOrKey ? 'text' : 'password'}
-                    value={openrouterKey}
-                    onChange={(e) => setOpenrouterKey(e.target.value)}
-                    placeholder="کلید دسترسی OpenRouter را وارد کنید"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10"
-                    dir="ltr"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowOrKey(!showOrKey)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-                  >
-                    {showOrKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
+                <a
+                  href="https://aistudio.google.com/app/apikey"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                >
+                  دریافت رایگان کلید از Google AI Studio
+                </a>
               </div>
-            )}
-
-            {primaryProvider === 'gemini' && (
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
-                    کلید اختصاصی Google Gemini API Key
-                  </label>
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
-                  >
-                    دریافت رایگان کلید از Google AI Studio
-                  </a>
-                </div>
-                <div className="relative">
-                  <input
-                    type={showGeminiKey ? 'text' : 'password'}
-                    value={geminiKey}
-                    onChange={(e) => setGeminiKey(e.target.value)}
-                    placeholder="کلید Gemini را اینجا وارد کنید (مثلاً AIzaSy...)"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-blue-500"
-                    dir="ltr"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowGeminiKey(!showGeminiKey)}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                    title={showGeminiKey ? 'مخفی‌سازی' : 'نمایش کلید'}
-                  >
-                    {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-                <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-900/50 flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                  <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                  <span>
-                    این کلید تنها در دستگاه شما و جدول دیتابیس Supabase ذخیره می‌شود و <strong>در کدهای گیت‌هاب قرار نخواهد گرفت</strong> تا خطای امنیتی Push Protection ایجاد نشود.
-                  </span>
-                </div>
+              <div className="relative">
+                <input
+                  type={showGeminiKey ? 'text' : 'password'}
+                  value={geminiKey}
+                  onChange={(e) => setGeminiKey(e.target.value)}
+                  placeholder="کلید Gemini را اینجا وارد کنید (مثلاً AIzaSy...)"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-blue-500"
+                  dir="ltr"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowGeminiKey(!showGeminiKey)}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  title={showGeminiKey ? 'مخفی‌سازی' : 'نمایش کلید'}
+                >
+                  {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
-            )}
+              <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-900/50 flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
+                <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
+                <span>
+                  این کلید تنها در دستگاه شما ذخیره می‌شود و <strong>در کدهای گیت‌هاب قرار نخواهد گرفت</strong> تا خطای امنیتی Push Protection ایجاد نشود. در صورت عدم ثبت کلید شخصی، از کلید سرور استفاده خواهد شد.
+                </span>
+              </div>
+            </div>
 
             <div className="flex items-center gap-3 pt-1">
               <button

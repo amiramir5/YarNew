@@ -621,7 +621,11 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                       {displayPartnerName}
                     </span>
                     <span className="text-[11px] text-slate-400 block truncate">
-                      {partnerState.isStudying ? `در حال مطالعه ${partnerState.subjectName}` : 'آنلاین و آماده'}
+                      {partnerState.isStudying
+                        ? partnerState.online
+                          ? `در حال مطالعه ${partnerState.subjectName}`
+                          : `در حال مطالعه (پس‌زمینه) ${partnerState.subjectName}`
+                        : 'آنلاین و آماده'}
                     </span>
                   </div>
                 </div>
@@ -638,7 +642,13 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
                       partnerState.isStudying ? 'bg-sky-500 animate-pulse' : 'bg-slate-400'
                     }`}
                   />
-                  <span>{partnerState.isStudying ? 'در حال مطالعه زنده' : 'استراحت'}</span>
+                  <span>
+                    {partnerState.isStudying
+                      ? partnerState.online
+                        ? 'در حال مطالعه زنده'
+                        : 'در حال مطالعه (پس‌زمینه)'
+                      : 'استراحت'}
+                  </span>
                 </span>
               </div>
 

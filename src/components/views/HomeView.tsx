@@ -298,7 +298,13 @@ export const HomeView: React.FC<HomeViewProps> = ({
             </h3>
             <span className="flex items-center gap-1.5 text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 shrink-0">
               <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse" />
-              <span>{partnerLive.isStudying ? `در حال مطالعه ${partnerLive.subjectName}` : 'آنلاین و آماده پارت'}</span>
+              <span>
+                {partnerLive.isStudying
+                  ? partnerLive.online
+                    ? `در حال مطالعه ${partnerLive.subjectName}`
+                    : `در حال مطالعه (پس‌زمینه) ${partnerLive.subjectName}`
+                  : 'آنلاین و آماده پارت'}
+              </span>
             </span>
           </div>
 

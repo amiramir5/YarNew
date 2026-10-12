@@ -529,7 +529,6 @@ export async function pushSettingsToCloud(
       ai: {
         ...settings.ai,
         geminiKey: '',
-        openrouterKey: '',
       },
     };
 
