@@ -24,6 +24,8 @@ interface AuthModalProps {
   onClose: () => void;
   onLoginSuccess?: (email: string, name: string) => void;
   initialMode?: 'signin' | 'signup' | 'reset' | 'update_password';
+  initialErrorMessage?: string;
+  initialSuccessMessage?: string;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -31,6 +33,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onLoginSuccess,
   initialMode = 'signin',
+  initialErrorMessage = '',
+  initialSuccessMessage = '',
 }) => {
   const { user, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, resetPassword, updatePassword } = useAuth();
   const currentCouple = getCoupleSettings();
@@ -39,18 +43,46 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState(activeEmail || currentCouple.myEmail || '');
   const [password, setPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [name, setName] = useState(activeName || currentCouple.myName || '');
 
   const [isLoading, setIsLoading] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
-  const [successMessage, setSuccessMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState(initialErrorMessage || '');
+  const [successMessage, setSuccessMessage] = useState(initialSuccessMessage || '');
 
   useEffect(() => {
     if (initialMode) {
       setMode(initialMode);
     }
-  }, [initialMode, isOpen]);
+  }, [initialMode]);
+
+  useEffect(() => {
+    if (initialErrorMessage) {
+      setErrorMessage(initialErrorMessage);
+    }
+  }, [initialErrorMessage]);
+
+  useEffect(() => {
+    if (initialSuccessMessage) {
+      setSuccessMessage(initialSuccessMessage);
+    }
+  }, [initialSuccessMessage]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+      if (!initialErrorMessage) {
+        setErrorMessage('');
+      }
+      if (!initialSuccessMessage) {
+        setSuccessMessage('');
+      }
+    }
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -67,13 +99,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setIsLoading(false);
           return;
         }
+        if (confirmPassword && newPassword !== confirmPassword) {
+          setErrorMessage('تکرار رمز عبور با رمز عبور جدید همخوانی ندارد.');
+          setIsLoading(false);
+          return;
+        }
         const res = await updatePassword(newPassword);
         setIsLoading(false);
         if (res.ok) {
           setSuccessMessage(res.message);
+          setNewPassword('');
+          setConfirmPassword('');
           setTimeout(() => {
             onClose();
-          }, 1500);
+          }, 1800);
         } else {
           setErrorMessage(res.message);
         }
@@ -277,27 +316,67 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
           {mode === 'update_password' ? (
-            <div>
-              <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                رمز عبور جدید:
-              </label>
-              <div className="relative">
-                <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
-                <input
-                  type={showPassword ? 'text' : 'password'}
-                  dir="ltr"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="حداقل ۶ کاراکتر"
-                  required
-                  className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
-                />
+            <div className="space-y-3.5">
+              <div className="p-3 rounded-xl bg-blue-50/80 dark:bg-blue-950/40 border border-blue-200/80 dark:border-blue-900/60 text-blue-900 dark:text-blue-100 text-[11px] leading-relaxed">
+                لطفاً رمز عبور جدید خود را مشخص فرمایید. رمز عبور باید حداقل شامل ۶ کاراکتر باشد.
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  رمز عبور جدید:
+                </label>
+                <div className="relative">
+                  <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    dir="ltr"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="حداقل ۶ کاراکتر"
+                    required
+                    className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  تکرار رمز عبور جدید:
+                </label>
+                <div className="relative">
+                  <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    dir="ltr"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="تکرار رمز عبور جدید"
+                    required
+                    className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+
+              <div className="pt-1 flex items-center justify-between text-[11px]">
                 <button
                   type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                  onClick={() => { setMode('signin'); setErrorMessage(''); }}
+                  className="text-blue-600 dark:text-blue-400 hover:underline cursor-pointer font-bold"
                 >
-                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  بازگشت به صفحه ورود
                 </button>
               </div>
             </div>

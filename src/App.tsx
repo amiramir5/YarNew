@@ -62,6 +62,11 @@ import {
   CoupleMemberState,
 } from './lib/coupleSync';
 import { requestAppWakeLock, releaseAppWakeLock } from './lib/wakeLock';
+import {
+  checkAuthUrl,
+  isPasswordRecoveryRequested,
+  consumePasswordRecoveryRequested,
+} from './lib/auth';
 
 import { getSupabaseClient } from './lib/supabase';
 import { Header } from './components/Header';
@@ -166,6 +171,8 @@ export default function App() {
   // Modals state
   const [cmdOpen, setCmdOpen] = useState(false);
   const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'signup' | 'reset' | 'update_password'>('signin');
+  const [authInitialError, setAuthInitialError] = useState('');
   const [timeWheelOpen, setTimeWheelOpen] = useState(false);
   const [timeWheelCurrent, setTimeWheelCurrent] = useState('06:00');
   const [datePickerOpen, setDatePickerOpen] = useState(false);
@@ -182,6 +189,36 @@ export default function App() {
   const [quizQuestions, setQuizQuestions] = useState<QuizQuestion[]>([]);
   const [quizSubject, setQuizSubject] = useState('bio');
   const [quizTopic, setQuizTopic] = useState('');
+
+  // Handle Supabase password recovery events & URL auth parameters reliably
+  useEffect(() => {
+    const handlePasswordRecovery = () => {
+      setAuthModalMode('update_password');
+      setAuthInitialError('');
+      setAuthModalOpen(true);
+    };
+
+    window.addEventListener('ky_password_recovery_requested', handlePasswordRecovery);
+
+    // Initial check on mount: captures recovery event fired before listener mount or recovery/error tokens in URL
+    const authUrlStatus = checkAuthUrl();
+    if (authUrlStatus.isRecovery || isPasswordRecoveryRequested()) {
+      consumePasswordRecoveryRequested();
+      setAuthModalMode('update_password');
+      if (authUrlStatus.error) {
+        setAuthInitialError(authUrlStatus.error);
+      }
+      setAuthModalOpen(true);
+    } else if (authUrlStatus.error) {
+      setAuthModalMode('signin');
+      setAuthInitialError(authUrlStatus.error);
+      setAuthModalOpen(true);
+    }
+
+    return () => {
+      window.removeEventListener('ky_password_recovery_requested', handlePasswordRecovery);
+    };
+  }, []);
 
   // Sync theme to root html element and body
   useEffect(() => {
@@ -850,7 +887,11 @@ export default function App() {
           })
         }
         onOpenCommandPalette={() => setCmdOpen(true)}
-        onOpenAuth={() => setAuthModalOpen(true)}
+        onOpenAuth={() => {
+          setAuthModalMode('signin');
+          setAuthInitialError('');
+          setAuthModalOpen(true);
+        }}
       />
 
       {/* PWA Direct Installation Banner for Mobile & Chrome */}
@@ -1123,7 +1164,12 @@ export default function App() {
 
       <AuthModal
         isOpen={authModalOpen}
-        onClose={() => setAuthModalOpen(false)}
+        initialMode={authModalMode}
+        initialErrorMessage={authInitialError}
+        onClose={() => {
+          setAuthModalOpen(false);
+          setAuthInitialError('');
+        }}
         onLoginSuccess={async () => {
           handleRefreshData();
           try {

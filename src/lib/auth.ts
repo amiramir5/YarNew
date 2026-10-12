@@ -16,7 +16,109 @@ export interface AuthState {
   role: 'husband' | 'wife';
 }
 
+export const DEFAULT_PRODUCTION_URL = 'https://amiramir5.github.io/YarNew/';
+
+/**
+ * Returns canonical production site URL for email confirmation and password recovery redirects.
+ * Always reads from VITE_SITE_URL if configured, falling back to 'https://amiramir5.github.io/YarNew/'.
+ * Ensures auth emails never redirect to localhost or transient preview origins.
+ */
+export function getAuthRedirectUrl(): string {
+  const envUrl = (import.meta as any)?.env?.VITE_SITE_URL;
+  if (envUrl && typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    let clean = envUrl.trim();
+    if (!clean.endsWith('/')) {
+      clean += '/';
+    }
+    return clean;
+  }
+  return DEFAULT_PRODUCTION_URL;
+}
+
 const AUTH_PERSIST_KEY = 'ky_authenticated_user_v2';
+
+let passwordRecoveryRequested = false;
+
+export function isPasswordRecoveryRequested(): boolean {
+  return passwordRecoveryRequested;
+}
+
+export function consumePasswordRecoveryRequested(): boolean {
+  const current = passwordRecoveryRequested;
+  passwordRecoveryRequested = false;
+  return current;
+}
+
+export interface AuthUrlCheckResult {
+  isRecovery: boolean;
+  error: string | null;
+  errorCode: string | null;
+}
+
+/**
+ * Inspects URL parameters (hash fragments and search queries) on initial load.
+ * Captures Supabase error callbacks, expired tokens, or password recovery links.
+ * Works seamlessly with GitHub Pages base path (/YarNew/).
+ */
+export function checkAuthUrl(): AuthUrlCheckResult {
+  if (typeof window === 'undefined') {
+    return { isRecovery: passwordRecoveryRequested, error: null, errorCode: null };
+  }
+
+  try {
+    const rawHash = window.location.hash.startsWith('#')
+      ? window.location.hash.substring(1)
+      : window.location.hash;
+    const hashParams = new URLSearchParams(rawHash);
+    const searchParams = new URLSearchParams(window.location.search);
+
+    const rawError =
+      hashParams.get('error_description') ||
+      hashParams.get('error') ||
+      searchParams.get('error_description') ||
+      searchParams.get('error');
+
+    const rawErrorCode =
+      hashParams.get('error_code') ||
+      searchParams.get('error_code');
+
+    const type = hashParams.get('type') || searchParams.get('type');
+    const isRecovery = type === 'recovery' || passwordRecoveryRequested;
+
+    let friendlyError: string | null = null;
+    if (rawError) {
+      const decoded = decodeURIComponent(rawError.replace(/\+/g, ' '));
+      friendlyError = translateSupabaseAuthError(decoded);
+      if (rawErrorCode && rawErrorCode.toLowerCase().includes('otp_expired')) {
+        friendlyError = 'لینک بازیابی یا تأیید ایمیل منقضی شده است. لطفاً مجدداً درخواست ارسال کنید.';
+      }
+    }
+
+    if (isRecovery) {
+      passwordRecoveryRequested = true;
+    }
+
+    // Clean up error query and hash fragments from URL so refreshing does not keep displaying error,
+    // while strictly preserving route and user params like ?tab=...
+    if (rawError) {
+      const cleanSearch = new URLSearchParams(window.location.search);
+      cleanSearch.delete('error');
+      cleanSearch.delete('error_code');
+      cleanSearch.delete('error_description');
+      const searchStr = cleanSearch.toString() ? `?${cleanSearch.toString()}` : '';
+      window.history.replaceState(null, '', `${window.location.pathname}${searchStr}`);
+    }
+
+    return {
+      isRecovery,
+      error: friendlyError,
+      errorCode: rawErrorCode,
+    };
+  } catch (e) {
+    console.warn('Notice parsing auth URL params:', e);
+    return { isRecovery: passwordRecoveryRequested, error: null, errorCode: null };
+  }
+}
 
 let globalAuthState: AuthState = {
   user: null,
@@ -97,6 +199,7 @@ export function initAuthListener(): () => void {
 
       // Handle password recovery event
       if (event === 'PASSWORD_RECOVERY') {
+        passwordRecoveryRequested = true;
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('ky_password_recovery_requested'));
         }
@@ -264,10 +367,12 @@ export async function signUpWithEmail(
   }
 
   try {
+    const redirectUrl = getAuthRedirectUrl();
     const { data, error } = await client.auth.signUp({
       email: cleanEmail,
       password: pass,
       options: {
+        emailRedirectTo: redirectUrl,
         data: {
           name: determinedName,
           full_name: determinedName,
@@ -297,13 +402,14 @@ export async function signUpWithEmail(
   } catch (err: any) {
     return {
       ok: false,
-      error: err.message || 'خطا در ثبت‌نام با سرور احراز هویت.',
+      error: translateSupabaseAuthError(err?.message || 'خطا در ثبت‌نام با سرور احراز هویت.'),
     };
   }
 }
 
 /**
- * Send password reset email with correct deployment redirect URL
+ * Send password reset email with canonical production deployment redirect URL.
+ * Never redirects to localhost or transient preview origins.
  */
 export async function resetPasswordForEmail(email: string): Promise<{ ok: boolean; message: string }> {
   const client = getSupabaseClient();
@@ -312,14 +418,11 @@ export async function resetPasswordForEmail(email: string): Promise<{ ok: boolea
     return { ok: false, message: 'لطفاً آدرس ایمیل خود را وارد کنید.' };
   }
   if (!client) {
-    return { ok: false, message: 'اتصال به سرور برقرار نیست.' };
+    return { ok: false, message: 'اتصال به سرور Supabase برقرار نیست. لطفاً اتصال اینترنت خود را بررسی نمایید.' };
   }
 
   try {
-    const redirectUrl =
-      typeof window !== 'undefined'
-        ? window.location.origin + window.location.pathname
-        : undefined;
+    const redirectUrl = getAuthRedirectUrl();
 
     const { error } = await client.auth.resetPasswordForEmail(cleanEmail, {
       redirectTo: redirectUrl,
@@ -328,14 +431,18 @@ export async function resetPasswordForEmail(email: string): Promise<{ ok: boolea
     if (error) {
       return { ok: false, message: translateSupabaseAuthError(error.message) };
     }
-    return { ok: true, message: 'لینک بازیابی رمز عبور به ایمیل شما ارسال شد. لطفاً صندوق ورودی خود را بررسی فرمایید.' };
+    return {
+      ok: true,
+      message: 'لینک بازیابی رمز عبور به ایمیل شما ارسال شد. لطفاً صندوق ورودی و پوشه هرزنامه (Spam) خود را بررسی فرمایید.',
+    };
   } catch (err: any) {
-    return { ok: false, message: err.message || 'خطا در ارسال ایمیل بازیابی رمز.' };
+    return { ok: false, message: translateSupabaseAuthError(err?.message || 'خطا در ارسال ایمیل بازیابی رمز.') };
   }
 }
 
 /**
- * Update authenticated user's password (used in password recovery flow)
+ * Update authenticated user's password (used in password recovery flow).
+ * Truly executes supabase.auth.updateUser({ password: newPassword }) with session verification.
  */
 export async function updateUserPassword(newPassword: string): Promise<{ ok: boolean; message: string }> {
   const client = getSupabaseClient();
@@ -343,17 +450,38 @@ export async function updateUserPassword(newPassword: string): Promise<{ ok: boo
     return { ok: false, message: 'رمز عبور جدید باید حداقل ۶ کاراکتر باشد.' };
   }
   if (!client) {
-    return { ok: false, message: 'اتصال به سرور برقرار نیست.' };
+    return { ok: false, message: 'اتصال به سرور Supabase برقرار نیست. لطفاً اتصال اینترنت خود را بررسی نمایید.' };
   }
 
   try {
-    const { error } = await client.auth.updateUser({ password: newPassword });
+    // Check for active session to guard against invalid or expired recovery tokens
+    const { data: sessionData, error: sessionErr } = await client.auth.getSession();
+    if (sessionErr) {
+      return { ok: false, message: translateSupabaseAuthError(sessionErr.message) };
+    }
+    if (!sessionData?.session?.user) {
+      return {
+        ok: false,
+        message: 'نشست بازیابی رمز عبور نامعتبر یا منقضی شده است. لطفاً مجدداً از بخش بازیابی، درخواست ارسال لینک جدید نمایید.',
+      };
+    }
+
+    const { data, error } = await client.auth.updateUser({ password: newPassword });
     if (error) {
       return { ok: false, message: translateSupabaseAuthError(error.message) };
     }
-    return { ok: true, message: 'رمز عبور شما با موفقیت تغییر یافت.' };
+
+    if (data?.user) {
+      globalAuthState.user = data.user;
+      notifyListeners();
+    }
+
+    return {
+      ok: true,
+      message: 'رمز عبور شما با موفقیت تغییر یافت. اکنون می‌توانید با رمز عبور جدید وارد شوید.',
+    };
   } catch (err: any) {
-    return { ok: false, message: err?.message || 'خطا در تغییر رمز عبور.' };
+    return { ok: false, message: translateSupabaseAuthError(err?.message || 'خطا در تغییر رمز عبور.') };
   }
 }
 
@@ -376,10 +504,51 @@ export async function signOutUser(): Promise<void> {
 
 export function translateSupabaseAuthError(msg: string): string {
   if (!msg) return 'خطایی در احراز هویت رخ داد.';
-  if (msg.includes('Password should be at least')) return 'رمز عبور باید حداقل ۶ کاراکتر باشد.';
-  if (msg.includes('Invalid email')) return 'فرمت آدرس ایمیل نامعتبر است.';
-  if (msg.includes('Email not confirmed')) return 'ایمیل شما هنوز تایید نشده است. لطفاً لینک ارسال شده به ایمیل را باز کنید.';
-  if (msg.includes('rate limit')) return 'تعداد درخواست‌ها بیش از حد مجاز است؛ لطفاً چند دقیقه صبر کنید.';
-  if (msg.includes('User already registered')) return 'این ایمیل قبلاً ثبت‌نام شده است. لطفاً وارد شوید.';
+  const lower = msg.toLowerCase();
+
+  if (lower.includes('password should be at least')) {
+    return 'رمز عبور باید حداقل ۶ کاراکتر باشد.';
+  }
+  if (lower.includes('invalid login credentials') || lower.includes('invalid_grant')) {
+    return 'ایمیل یا رمز عبور اشتباه است. لطفاً مجدداً بررسی فرمایید.';
+  }
+  if (lower.includes('invalid email') || lower.includes('email is invalid')) {
+    return 'فرمت آدرس ایمیل نامعتبر است.';
+  }
+  if (lower.includes('email not confirmed')) {
+    return 'ایمیل شما هنوز تأیید نشده است. لطفاً پیوند تأیید ارسال‌شده به ایمیلتان را باز کنید.';
+  }
+  if (lower.includes('rate limit') || lower.includes('too many requests')) {
+    return 'تعداد درخواست‌ها بیش از حد مجاز است. لطفاً چند دقیقه دیگر مجدداً تلاش فرمایید.';
+  }
+  if (lower.includes('user already registered') || lower.includes('user_already_exists')) {
+    return 'این آدرس ایمیل قبلاً در سیستم ثبت‌نام شده است. لطفاً وارد شوید.';
+  }
+  if (
+    lower.includes('email link is invalid or has expired') ||
+    lower.includes('otp_expired') ||
+    lower.includes('token has expired') ||
+    lower.includes('token_expired')
+  ) {
+    return 'پیوند بازیابی یا تأیید ایمیل منقضی شده یا نامعتبر است. لطفاً مجدداً درخواست ارسال نمایید.';
+  }
+  if (lower.includes('auth session missing') || lower.includes('session_missing')) {
+    return 'نشست بازیابی رمز یافت نشد یا منقضی شده است. لطفاً مجدداً درخواست بازیابی ثبت کنید.';
+  }
+  if (lower.includes('new password should be different')) {
+    return 'رمز عبور جدید باید با رمز قبلی متفاوت باشد.';
+  }
+  if (lower.includes('unauthorized_client') || lower.includes('access_denied')) {
+    return 'درخواست دسترسی معتبر نیست یا پیوند منقضی گردیده است.';
+  }
+  if (lower.includes('for security purposes, you can only request')) {
+    return 'به دلایل امنیتی، لطفاً قبل از ارسال درخواست مجدد، اندکی صبر کنید.';
+  }
+  if (lower.includes('user not found')) {
+    return 'کاربری با این آدرس ایمیل پیدا نشد.';
+  }
+  if (lower.includes('jwt expired')) {
+    return 'اعتبار نشست کاری به پایان رسیده است. لطفاً مجدداً وارد شوید.';
+  }
   return msg;
 }
