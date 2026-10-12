@@ -1,52 +1,56 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Mail,
   Key,
   LogIn,
   LogOut,
   ShieldCheck,
-  Shield,
   User,
-  Sparkles,
   AlertCircle,
   Loader2,
   UserPlus,
   RotateCcw,
   Eye,
   EyeOff,
+  CheckCircle2,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import {
   getCoupleSettings,
-  DEFAULT_HUSBAND_NAME,
-  DEFAULT_WIFE_NAME,
 } from '../../lib/coupleSync';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onLoginSuccess?: (email: string, name: string) => void;
+  initialMode?: 'signin' | 'signup' | 'reset' | 'update_password';
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
   onLoginSuccess,
+  initialMode = 'signin',
 }) => {
-  const { user, session, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, resetPassword } = useAuth();
+  const { user, email: activeEmail, name: activeName, role: activeRole, signIn, signUp, signOut, resetPassword, updatePassword } = useAuth();
   const currentCouple = getCoupleSettings();
 
-  const [mode, setMode] = useState<'signin' | 'signup' | 'reset'>('signin');
+  const [mode, setMode] = useState<'signin' | 'signup' | 'reset' | 'update_password'>(initialMode);
   const [email, setEmail] = useState(activeEmail || currentCouple.myEmail || '');
   const [password, setPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [name, setName] = useState(activeName || currentCouple.myName || DEFAULT_HUSBAND_NAME);
-  const [role, setRole] = useState<'husband' | 'wife'>(activeRole || currentCouple.myRole || 'husband');
-  const [pairCode, setPairCode] = useState(currentCouple.pairCode || '');
+  const [name, setName] = useState(activeName || currentCouple.myName || '');
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
+
+  useEffect(() => {
+    if (initialMode) {
+      setMode(initialMode);
+    }
+  }, [initialMode, isOpen]);
 
   if (!isOpen) return null;
 
@@ -56,14 +60,33 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessMessage('');
     setIsLoading(true);
 
-    const cleanEmail = email.trim();
-    if (!cleanEmail) {
-      setErrorMessage('لطفاً آدرس ایمیل را وارد فرمایید.');
-      setIsLoading(false);
-      return;
-    }
-
     try {
+      if (mode === 'update_password') {
+        if (!newPassword || newPassword.length < 6) {
+          setErrorMessage('رمز عبور جدید باید حداقل ۶ کاراکتر باشد.');
+          setIsLoading(false);
+          return;
+        }
+        const res = await updatePassword(newPassword);
+        setIsLoading(false);
+        if (res.ok) {
+          setSuccessMessage(res.message);
+          setTimeout(() => {
+            onClose();
+          }, 1500);
+        } else {
+          setErrorMessage(res.message);
+        }
+        return;
+      }
+
+      const cleanEmail = email.trim();
+      if (!cleanEmail) {
+        setErrorMessage('لطفاً آدرس ایمیل را وارد فرمایید.');
+        setIsLoading(false);
+        return;
+      }
+
       if (mode === 'reset') {
         const res = await resetPassword(cleanEmail);
         setIsLoading(false);
@@ -94,14 +117,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           setIsLoading(false);
           return;
         }
-        const res = await signUp(cleanEmail, password, name, role);
+        const res = await signUp(cleanEmail, password, name);
         if (!res.ok) {
           setErrorMessage(res.error || 'خطا در ثبت‌نام حساب کاربری.');
           setIsLoading(false);
           return;
         }
         if (res.requiresVerification) {
-          setSuccessMessage(res.error || 'لینک تأیید به ایمیل ارسال شد. لطفاً ایمیل خود را بررسی کنید.');
+          setSuccessMessage('لینک تأیید به ایمیل ارسال شد. لطفاً صندوق ورودی خود را بررسی کنید.');
           setIsLoading(false);
           return;
         }
@@ -173,7 +196,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </span>
               </div>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-600 text-white">
-                {activeRole === 'husband' ? `نقش: ${DEFAULT_HUSBAND_NAME}` : `نقش: ${DEFAULT_WIFE_NAME}`}
+                {activeRole === 'husband' ? 'عضو ۱' : 'عضو ۲'}
               </span>
             </div>
 
@@ -193,46 +216,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         )}
 
         {/* Mode Selector Tabs */}
-        <div className="p-1 rounded-2xl neu-inset flex gap-1 text-xs font-bold">
-          <button
-            type="button"
-            onClick={() => { setMode('signin'); setErrorMessage(''); }}
-            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              mode === 'signin'
-                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            }`}
-          >
-            <LogIn className="w-3.5 h-3.5" />
-            <span>ورود</span>
-          </button>
+        {mode !== 'update_password' && (
+          <div className="p-1 rounded-2xl neu-inset flex gap-1 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => { setMode('signin'); setErrorMessage(''); }}
+              className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                mode === 'signin'
+                  ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              }`}
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>ورود</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => { setMode('signup'); setErrorMessage(''); }}
-            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              mode === 'signup'
-                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            }`}
-          >
-            <UserPlus className="w-3.5 h-3.5" />
-            <span>ثبت‌نام جدید</span>
-          </button>
+            <button
+              type="button"
+              onClick={() => { setMode('signup'); setErrorMessage(''); }}
+              className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                mode === 'signup'
+                  ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              }`}
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>ثبت‌نام</span>
+            </button>
 
-          <button
-            type="button"
-            onClick={() => { setMode('reset'); setErrorMessage(''); }}
-            className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
-              mode === 'reset'
-                ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
-                : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
-            }`}
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>بازیابی رمز</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={() => { setMode('reset'); setErrorMessage(''); }}
+              className={`flex-1 py-2 rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                mode === 'reset'
+                  ? 'neu-raised text-blue-700 dark:text-blue-300 font-extrabold'
+                  : 'text-slate-500 hover:text-slate-800 dark:text-slate-400'
+              }`}
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>بازیابی رمز</span>
+            </button>
+          </div>
+        )}
 
         {/* Notifications */}
         {errorMessage && (
@@ -244,112 +269,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
         {successMessage && (
           <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-emerald-700 dark:text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in">
-            <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-600" />
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
             <span className="leading-relaxed">{successMessage}</span>
           </div>
         )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3.5 text-xs">
-          {mode === 'signup' && (
-            <>
-              {/* Role selection */}
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  نقش و هویت در رقابت دونفره:
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => { setRole('husband'); setName(DEFAULT_HUSBAND_NAME); }}
-                    className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                      role === 'husband'
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 ring-2 ring-blue-400/30 text-blue-800 dark:text-blue-200 font-extrabold'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <Shield className="w-4 h-4 text-blue-600" />
-                    <span>همسر ۱ (امیرمحمد)</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => { setRole('wife'); setName(DEFAULT_WIFE_NAME); }}
-                    className={`p-2.5 rounded-xl border text-center transition-all cursor-pointer flex items-center justify-center gap-2 ${
-                      role === 'wife'
-                        ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/50 ring-2 ring-blue-400/30 text-blue-800 dark:text-blue-200 font-extrabold'
-                        : 'border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 text-slate-600 dark:text-slate-400'
-                    }`}
-                  >
-                    <Sparkles className="w-4 h-4 text-sky-500" />
-                    <span>همسر ۲ (آرمیتا)</span>
-                  </button>
-                </div>
-              </div>
-
-              {/* Display Name */}
-              <div>
-                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                  نام نمایشی:
-                </label>
-                <div className="relative">
-                  <User className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
-                  <input
-                    type="text"
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder="نام شما"
-                    required
-                    className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:border-blue-500"
-                  />
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Email input */}
-          <div>
-            <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-              آدرس ایمیل:
-            </label>
-            <div className="relative">
-              <Mail className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input
-                type="email"
-                dir="ltr"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="example@gmail.com"
-                required
-                className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
-              />
-            </div>
-          </div>
-
-          {/* Password input */}
-          {mode !== 'reset' && (
+          {mode === 'update_password' ? (
             <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="font-bold text-slate-700 dark:text-slate-300">
-                  رمز عبور:
-                </label>
-                {mode === 'signin' && (
-                  <button
-                    type="button"
-                    onClick={() => { setMode('reset'); setErrorMessage(''); }}
-                    className="text-[11px] text-blue-600 hover:underline cursor-pointer"
-                  >
-                    رمز عبور را فراموش کردید؟
-                  </button>
-                )}
-              </div>
+              <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                رمز عبور جدید:
+              </label>
               <div className="relative">
                 <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
                 <input
                   type={showPassword ? 'text' : 'password'}
                   dir="ltr"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
                   placeholder="حداقل ۶ کاراکتر"
                   required
                   className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
@@ -363,6 +301,85 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
               </div>
             </div>
+          ) : (
+            <>
+              {mode === 'signup' && (
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    نام یا نام نمایشی:
+                  </label>
+                  <div className="relative">
+                    <User className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type="text"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="نام شما"
+                      required
+                      className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-hidden focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Email input */}
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  آدرس ایمیل:
+                </label>
+                <div className="relative">
+                  <Mail className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="example@gmail.com"
+                    required
+                    className="w-full pr-9 pl-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Password input */}
+              {mode !== 'reset' && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-bold text-slate-700 dark:text-slate-300">
+                      رمز عبور:
+                    </label>
+                    {mode === 'signin' && (
+                      <button
+                        type="button"
+                        onClick={() => { setMode('reset'); setErrorMessage(''); }}
+                        className="text-[11px] text-blue-600 hover:underline cursor-pointer"
+                      >
+                        رمز عبور را فراموش کردید؟
+                      </button>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Key className="absolute right-3 top-2.5 w-4 h-4 text-slate-400" />
+                    <input
+                      type={showPassword ? 'text' : 'password'}
+                      dir="ltr"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      placeholder="حداقل ۶ کاراکتر"
+                      required
+                      className="w-full pr-9 pl-10 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white font-mono text-left focus:outline-hidden focus:border-blue-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute left-3 top-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
           {/* Submit button */}
@@ -385,6 +402,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <>
                 <UserPlus className="w-4 h-4" />
                 <span>ایجاد حساب جدید</span>
+              </>
+            ) : mode === 'update_password' ? (
+              <>
+                <Key className="w-4 h-4" />
+                <span>ثبت رمز عبور جدید</span>
               </>
             ) : (
               <>

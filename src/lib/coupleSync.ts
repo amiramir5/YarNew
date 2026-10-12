@@ -37,21 +37,12 @@ const STORAGE_KEYS = {
   PARTNER_EMAIL: 'ky_couple_partner_email_v4',
   SIMULATION_ENABLED: 'ky_couple_simulation_v4',
   PARTNER_STATE: 'ky_couple_partner_state_v4',
+  MY_STATE: 'ky_couple_my_state_v4',
   SERVER_OFFSET: 'ky_server_time_offset_ms',
 };
 
-// Generate random 6-character pairing code
-export function generatePairCode(): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let res = 'KY-';
-  for (let i = 0; i < 6; i++) {
-    res += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return res;
-}
-
-export const DEFAULT_HUSBAND_NAME = 'امیرمحمد';
-export const DEFAULT_WIFE_NAME = 'آرمیتا';
+export const DEFAULT_HUSBAND_NAME = 'کاربر ۱';
+export const DEFAULT_WIFE_NAME = 'کاربر ۲';
 export const DEFAULT_PAIR_CODE = '';
 
 let serverClockOffsetMs = 0;
@@ -129,14 +120,16 @@ export function saveCoupleSettings(settings: Partial<CoupleSettings>): void {
     localStorage.setItem(STORAGE_KEYS.SIMULATION_ENABLED, String(settings.simulationEnabled));
   }
 
-  // Dispatch global window event so any open view re-syncs
-  try {
-    window.dispatchEvent(
-      new CustomEvent('konkoor_profile_switched', {
-        detail: { role, name: myName, email: myEmail, partnerName, partnerEmail, pairCode },
-      })
-    );
-  } catch {}
+  // Only dispatch profile switched event if email or identity actually changed
+  if (settings.myEmail !== undefined && settings.myEmail !== prev.myEmail) {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('konkoor_profile_switched', {
+          detail: { role, name: myName, email: myEmail, partnerName, partnerEmail, pairCode },
+        })
+      );
+    } catch {}
+  }
 }
 
 /**
@@ -214,7 +207,7 @@ export async function joinPairRoom(inviteCode: string): Promise<{
 export async function leavePairRoom(): Promise<{ ok: boolean; error?: string }> {
   const supabase = getSupabaseClient();
   if (!supabase) {
-    saveCoupleSettings({ pairCode: '' });
+    saveCoupleSettings({ pairCode: '', partnerEmail: '', partnerName: '' });
     return { ok: true };
   }
 
@@ -223,7 +216,7 @@ export async function leavePairRoom(): Promise<{ ok: boolean; error?: string }> 
     if (error) {
       console.warn('RPC leave_pair notice:', error.message);
     }
-    saveCoupleSettings({ pairCode: '' });
+    saveCoupleSettings({ pairCode: '', partnerEmail: '', partnerName: '' });
     if (sharedPairChannel) {
       try {
         supabase.removeChannel(sharedPairChannel);
@@ -233,8 +226,36 @@ export async function leavePairRoom(): Promise<{ ok: boolean; error?: string }> 
     }
     return { ok: true };
   } catch {
-    saveCoupleSettings({ pairCode: '' });
+    saveCoupleSettings({ pairCode: '', partnerEmail: '', partnerName: '' });
     return { ok: true };
+  }
+}
+
+/**
+ * Regenerate duo invitation code using regenerate_invite RPC
+ */
+export async function regenerateInviteCode(): Promise<{
+  ok: boolean;
+  invite_code?: string;
+  expires_at?: string;
+  error?: string;
+}> {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
+    return { ok: false, error: 'ارتباط با پایگاه داده Supabase برقرار نیست.' };
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('regenerate_invite');
+    if (error) {
+      return { ok: false, error: error.message || 'خطا در تولید مجدد کد دعوت.' };
+    }
+    if (data?.ok && data.invite_code) {
+      return { ok: true, invite_code: data.invite_code, expires_at: data.expires_at };
+    }
+    return { ok: false, error: 'پاسخ نامعتبر از سرور.' };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || 'خطا در اتصال به سرور.' };
   }
 }
 
@@ -250,15 +271,18 @@ export async function fetchMyPairStatus(): Promise<{
   memberCount?: number;
   partnerName?: string;
   partnerEmail?: string;
-}> {
+} | null> {
   const supabase = getSupabaseClient();
-  if (!supabase) return { inPair: false };
+  if (!supabase) return null;
 
   try {
     const { data, error } = await supabase.rpc('get_my_pair_status');
-    if (error || !data) return { inPair: false };
+    if (error) {
+      console.warn('get_my_pair_status error:', error.message);
+      return null; // Return null on network error to distinguish from confirmed not in pair!
+    }
 
-    if (data.in_pair && data.pair_code) {
+    if (data && data.in_pair && data.pair_code) {
       saveCoupleSettings({
         pairCode: data.pair_code,
         myRole: data.role || 'husband',
@@ -276,21 +300,28 @@ export async function fetchMyPairStatus(): Promise<{
         partnerName: data.partner_name,
         partnerEmail: data.partner_email,
       };
+    } else if (data && data.in_pair === false) {
+      // Confirmed not in pair by server
+      saveCoupleSettings({ pairCode: '', partnerEmail: '', partnerName: '' });
+      localStorage.removeItem(STORAGE_KEYS.PARTNER_STATE);
+      return { inPair: false };
     }
-    return { inPair: false };
+    return null;
   } catch {
-    return { inPair: false };
+    return null; // Network error
   }
 }
 
 /**
- * Singleton Managed Realtime Channel with Subscription Queue & Backoff
+ * Singleton Managed Realtime Channel with Reconnect Backoff & Broadcast Queue
  */
 let sharedPairChannel: any = null;
 let currentPairCodeForChannel: string = '';
 let channelSubscribed = false;
 let pendingBroadcastQueue: Array<{ event: string; payload: any }> = [];
 const realtimeSubscribers = new Set<(state: CoupleMemberState) => void>();
+let reconnectTimer: any = null;
+let reconnectDelayMs = 2000;
 
 function drainPendingBroadcasts(channel: any) {
   if (!channelSubscribed || !channel) return;
@@ -362,9 +393,6 @@ export function getOrCreatePairChannel(pairCode: string): any {
         realtimeSubscribers.forEach((cb) => cb(updatedState));
       }
     })
-    .on('presence', { event: 'sync' }, () => {
-      // Presence sync
-    })
     .on(
       'postgres_changes',
       {
@@ -422,15 +450,17 @@ export function getOrCreatePairChannel(pairCode: string): any {
     .subscribe((status: string) => {
       if (status === 'SUBSCRIBED') {
         channelSubscribed = true;
+        reconnectDelayMs = 2000;
         drainPendingBroadcasts(channel);
       } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
         channelSubscribed = false;
-        // Schedule backoff reconnect
-        setTimeout(() => {
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => {
           if (currentPairCodeForChannel === pairCode) {
             getOrCreatePairChannel(pairCode);
           }
-        }, 3000);
+        }, reconnectDelayMs);
+        reconnectDelayMs = Math.min(30000, Math.floor(reconnectDelayMs * 1.5));
       } else if (status === 'CLOSED') {
         channelSubscribed = false;
       }
@@ -440,8 +470,44 @@ export function getOrCreatePairChannel(pairCode: string): any {
   return channel;
 }
 
+// Keep local reference to last known state to merge partial updates correctly
+let lastMyState: CoupleMemberState | null = null;
+let lastDatabasePersistMs = 0;
+
+function getStoredMyState(): CoupleMemberState {
+  const settings = getCoupleSettings();
+  const day = studyDayKey();
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEYS.MY_STATE);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed) return parsed;
+      }
+    } catch {}
+  }
+  return {
+    role: settings.myRole,
+    name: settings.myName,
+    avatar: '3d-badge',
+    isStudying: false,
+    online: true,
+    subject: 'bio',
+    subjectName: 'زیست‌شناسی',
+    timerStartedAt: null,
+    accumulatedSeconds: 0,
+    sessionElapsedSeconds: 0,
+    todaySeconds: 0,
+    todayTests: 0,
+    studyDay: day,
+    lastHeartbeat: Date.now(),
+  };
+}
+
 /**
- * Broadcast study state with immediate queueing & database persistence on key transitions
+ * Broadcast study state.
+ * Crucially merges partial updates so { online: false } NEVER turns off an active study timer!
+ * Separates high-frequency Realtime broadcasts from low-frequency database persistence.
  */
 export async function broadcastMyState(
   state: Partial<CoupleMemberState>,
@@ -451,23 +517,33 @@ export async function broadcastMyState(
   if (!settings.pairCode) return;
   const day = studyDayKey();
 
+  const prev = lastMyState || getStoredMyState();
+
   const fullState: CoupleMemberState = {
     role: settings.myRole,
     name: settings.myName,
     avatar: '3d-badge',
-    isStudying: Boolean(state.isStudying),
-    online: state.online !== false,
-    subject: state.subject || 'bio',
-    subjectName: state.subjectName || 'زیست‌شناسی',
-    timerStartedAt: state.timerStartedAt ?? null,
-    accumulatedSeconds: state.accumulatedSeconds ?? 0,
-    sessionElapsedSeconds: state.sessionElapsedSeconds || 0,
-    todaySeconds: state.todaySeconds || 0,
-    todayTests: state.todayTests || 0,
+    isStudying: state.isStudying !== undefined ? Boolean(state.isStudying) : prev.isStudying,
+    online: state.online !== undefined ? Boolean(state.online) : prev.online,
+    subject: state.subject !== undefined ? state.subject : prev.subject,
+    subjectName: state.subjectName !== undefined ? state.subjectName : prev.subjectName,
+    timerStartedAt: state.timerStartedAt !== undefined ? state.timerStartedAt : prev.timerStartedAt,
+    accumulatedSeconds: state.accumulatedSeconds !== undefined ? state.accumulatedSeconds : prev.accumulatedSeconds,
+    sessionElapsedSeconds: state.sessionElapsedSeconds !== undefined ? state.sessionElapsedSeconds : prev.sessionElapsedSeconds,
+    todaySeconds: state.todaySeconds !== undefined ? state.todaySeconds : prev.todaySeconds,
+    todayTests: state.todayTests !== undefined ? state.todayTests : prev.todayTests,
     studyDay: day,
     lastHeartbeat: Date.now(),
   };
 
+  lastMyState = fullState;
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(STORAGE_KEYS.MY_STATE, JSON.stringify(fullState));
+    } catch {}
+  }
+
+  // 1. Lightweight Realtime Broadcast
   const channel = getOrCreatePairChannel(settings.pairCode);
   if (channel && channelSubscribed) {
     try {
@@ -477,50 +553,70 @@ export async function broadcastMyState(
         payload: fullState,
       });
     } catch {
-      pendingBroadcastQueue.push({ event: 'timer_heartbeat', payload: fullState });
+      // Coalesce: only keep latest timer heartbeat
+      pendingBroadcastQueue = [{ event: 'timer_heartbeat', payload: fullState }];
     }
   } else if (channel) {
-    pendingBroadcastQueue.push({ event: 'timer_heartbeat', payload: fullState });
+    pendingBroadcastQueue = [{ event: 'timer_heartbeat', payload: fullState }];
   }
 
-  // Persist to DB on transitions (Start, Pause, Resume, Finish) or explicit request
-  if (options.persistToDb || state.isStudying !== undefined || !state.online) {
+  // 2. Controlled Database Persistence
+  // Only persist to PostgreSQL on genuine state transitions OR explicit periodic DB heartbeat (~25-30s)
+  const isTransition = prev.isStudying !== fullState.isStudying || (state.online !== undefined && prev.online !== fullState.online);
+  const now = Date.now();
+  const shouldPersist = options.persistToDb || isTransition || (now - lastDatabasePersistMs > 25000);
+
+  if (shouldPersist) {
+    lastDatabasePersistMs = now;
     try {
       const supabase = getSupabaseClient();
       if (supabase) {
         const { data: sessionData } = await supabase.auth.getSession();
         const userId = sessionData?.session?.user?.id || null;
+        if (!userId) return; // Do not write null user_id
 
-        await supabase.from('couple_live_states').upsert(
-          {
-            pair_code: settings.pairCode,
-            role: settings.myRole,
-            user_id: userId,
-            display_name: settings.myName,
-            email: settings.myEmail || null,
-            is_studying: fullState.isStudying,
-            subject: fullState.subject,
-            subject_name: fullState.subjectName,
-            timer_started_at: fullState.timerStartedAt || null,
-            accumulated_seconds: fullState.accumulatedSeconds || 0,
-            session_elapsed_seconds: fullState.sessionElapsedSeconds,
-            today_seconds: fullState.todaySeconds,
-            today_tests: fullState.todayTests,
-            study_day: day,
-            online: fullState.online,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'pair_code,role' }
-        );
+        const { data: upsertData, error: upsertError } = await supabase
+          .from('couple_live_states')
+          .upsert(
+            {
+              pair_code: settings.pairCode,
+              role: settings.myRole,
+              user_id: userId,
+              display_name: settings.myName,
+              email: settings.myEmail || null,
+              is_studying: fullState.isStudying,
+              subject: fullState.subject,
+              subject_name: fullState.subjectName,
+              timer_started_at: fullState.timerStartedAt || null,
+              accumulated_seconds: fullState.accumulatedSeconds || 0,
+              session_elapsed_seconds: fullState.sessionElapsedSeconds,
+              today_seconds: fullState.todaySeconds,
+              today_tests: fullState.todayTests,
+              study_day: day,
+              online: fullState.online,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: 'pair_code,role' }
+          )
+          .select('updated_at')
+          .maybeSingle();
+
+        if (upsertError) {
+          console.warn('DB upsert error in broadcastMyState:', upsertError.message);
+        } else if (upsertData?.updated_at) {
+          const serverMs = new Date(upsertData.updated_at).getTime();
+          const localMs = Date.now();
+          setServerOffset(serverMs - localMs);
+        }
       }
-    } catch (err) {
-      console.warn('DB upsert non-blocking notice in broadcastMyState:', err);
+    } catch (err: any) {
+      console.warn('DB upsert notice in broadcastMyState:', err);
     }
   }
 }
 
 /**
- * Fetch or get live partner state from storage
+ * Fetch or get stored partner state
  */
 export function getStoredPartnerState(): CoupleMemberState {
   const settings = getCoupleSettings();
@@ -533,14 +629,14 @@ export function getStoredPartnerState(): CoupleMemberState {
       name: settings.partnerName,
       avatar: '3d-badge',
       isStudying: false,
-      online: true,
+      online: false,
       subject: partnerRole === 'wife' ? 'bio' : 'chem',
       subjectName: defaultSubject,
       sessionElapsedSeconds: 0,
       todaySeconds: 0,
       todayTests: 0,
       studyDay: studyDayKey(),
-      lastHeartbeat: Date.now(),
+      lastHeartbeat: 0,
     };
   }
 
@@ -548,7 +644,7 @@ export function getStoredPartnerState(): CoupleMemberState {
     const raw = localStorage.getItem(STORAGE_KEYS.PARTNER_STATE);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.studyDay === studyDayKey()) {
+      if (parsed) {
         return {
           ...parsed,
           role: partnerRole,
@@ -563,14 +659,14 @@ export function getStoredPartnerState(): CoupleMemberState {
     name: settings.partnerName,
     avatar: '3d-badge',
     isStudying: false,
-    online: true,
+    online: false,
     subject: partnerRole === 'wife' ? 'bio' : 'chem',
     subjectName: defaultSubject,
     sessionElapsedSeconds: 0,
     todaySeconds: 0,
     todayTests: 0,
     studyDay: studyDayKey(),
-    lastHeartbeat: Date.now(),
+    lastHeartbeat: 0,
   };
 }
 
@@ -603,8 +699,7 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
 
     const serverTimeStr = data.updated_at || new Date().toISOString();
     const updatedAtMs = new Date(serverTimeStr).getTime();
-    
-    // Estimate server clock offset
+
     const serverOffset = getServerOffset();
     const nowCompensated = Date.now() + serverOffset;
     const isStale = nowCompensated - updatedAtMs > 45000;
@@ -653,7 +748,7 @@ export async function fetchRemotePartnerState(): Promise<CoupleMemberState | nul
 }
 
 /**
- * Subscribe to realtime updates for partner state via Supabase Channel
+ * Subscribe to realtime updates for partner state
  */
 export function subscribeToPartnerRealtime(onPartnerUpdate: (state: CoupleMemberState) => void): () => void {
   const settings = getCoupleSettings();

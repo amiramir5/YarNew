@@ -31,7 +31,7 @@ import {
   CartesianGrid,
 } from 'recharts';
 import { AppSettings, Session } from '../../types';
-import { faNum, fmtHM, fmtPercent, getWeekDays, studyDayKey } from '../../lib/jalali';
+import { faNum, fmtHM, fmtPercent, getWeekDays, studyDayKey, jalaliMonthKey, jalaliPartsFromIso } from '../../lib/jalali';
 import {
   CoupleMemberState,
   getCoupleSettings,
@@ -45,13 +45,15 @@ import {
   joinPairRoom,
   leavePairRoom,
   fetchMyPairStatus,
+  regenerateInviteCode,
   DEFAULT_PAIR_CODE,
 } from '../../lib/coupleSync';
 import { testSupabaseConnection } from '../../lib/supabase';
-import { switchActiveUser } from '../../lib/auth';
+import { fetchPartnerSessions } from '../../lib/cloudSync';
 import { getSubject } from '../../lib/constants';
 import { Avatar3DBadge } from '../common/Avatar3DBadge';
 import { CANONICAL_SUPABASE_SQL } from '../../lib/sqlSchema';
+import { ConfirmModal } from '../common/ConfirmModal';
 
 interface CoupleViewProps {
   sessions: Session[];
@@ -95,13 +97,26 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
 
   // Partner State (Live & Synced via Supabase)
   const [partnerState, setPartnerState] = useState<CoupleMemberState>(() => getStoredPartnerState());
+  const [partnerSessions, setPartnerSessions] = useState<Session[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [confirmLeaveOpen, setConfirmLeaveOpen] = useState(false);
+
+  // Load Partner Sessions for weekly/monthly comparison
+  useEffect(() => {
+    if (pairCode) {
+      fetchPartnerSessions(pairCode, partnerEmail).then((res) => {
+        if (res && res.length > 0) {
+          setPartnerSessions(res);
+        }
+      });
+    }
+  }, [pairCode, partnerEmail]);
 
   // Load Pair Status on Mount
   useEffect(() => {
     fetchMyPairStatus().then((status) => {
       setPairStatus(status);
-      if (status.inPair && status.pairCode) {
+      if (status && status.inPair && status.pairCode) {
         setPairCode(status.pairCode);
         if (status.inviteCode) setCreatedInviteCode(status.inviteCode);
       }
@@ -122,23 +137,20 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
 
     syncState();
     window.addEventListener('konkoor_profile_switched', syncState);
-    return () => window.removeEventListener('konkoor_profile_switched', syncState);
-  }, []);
 
-  const handleRoleQuickSwitch = (target: 'husband' | 'wife') => {
-    switchActiveUser(target);
-    const cur = getCoupleSettings();
-    setMyRole(cur.myRole);
-    setMyEmail(cur.myEmail || '');
-    setPartnerEmail(cur.partnerEmail || '');
-    setMyName(cur.myName);
-    setPartnerName(cur.partnerName);
-    setPairSavedSuccess(true);
-    setTimeout(() => setPairSavedSuccess(false), 2000);
-    fetchRemotePartnerState().then((remote) => {
-      if (remote) setPartnerState(remote);
-    });
-  };
+    const handleSyncError = (e: any) => {
+      const msg = e?.detail?.message;
+      if (msg) {
+        setPairActionError(msg);
+      }
+    };
+    window.addEventListener('ky_pair_sync_error', handleSyncError);
+
+    return () => {
+      window.removeEventListener('konkoor_profile_switched', syncState);
+      window.removeEventListener('ky_pair_sync_error', handleSyncError);
+    };
+  }, []);
 
   const displayMyName = myRole === 'husband' ? (myName || 'امیرمحمد') : (myName || 'آرمیتا');
   const displayPartnerName =
@@ -262,24 +274,44 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     }
   };
 
-  const handleLeaveRoom = async () => {
-    if (!window.confirm('آیا مطمئن هستید که می‌خواهید از اتاق مطالعه دونفره خارج شوید؟')) {
-      return;
-    }
+  const handleLeaveRoom = () => {
+    setConfirmLeaveOpen(true);
+  };
+
+  const handleExecuteLeave = async () => {
+    setConfirmLeaveOpen(false);
     setIsPairActionLoading(true);
     await leavePairRoom();
     setPairCode('');
     setCreatedInviteCode(null);
     setPairStatus({ inPair: false });
+    setPartnerSessions([]);
     setIsPairActionLoading(false);
+  };
+
+  const handleRegenerateInvite = async () => {
+    setIsPairActionLoading(true);
+    setPairActionError(null);
+    const res = await regenerateInviteCode();
+    setIsPairActionLoading(false);
+    if (!res.ok) {
+      setPairActionError(res.error || 'خطا در تمدید کد دعوت.');
+    } else if (res.invite_code) {
+      setCreatedInviteCode(res.invite_code);
+      setPairStatus((prev: any) => ({
+        ...prev,
+        inviteCode: res.invite_code,
+        expiresAt: res.expires_at,
+      }));
+    }
   };
 
   const handleSavePairSettings = (e: React.FormEvent) => {
     e.preventDefault();
     const cleanMyEmail = myEmail.trim();
     const cleanPartnerEmail = partnerEmail.trim();
-    const cleanMyName = myName.trim() || (myRole === 'husband' ? 'امیرمحمد' : 'آرمیتا');
-    const cleanPartnerName = partnerName.trim() || (myRole === 'husband' ? 'آرمیتا' : 'امیرمحمد');
+    const cleanMyName = myName.trim() || (myRole === 'husband' ? 'کاربر ۱' : 'کاربر ۲');
+    const cleanPartnerName = partnerName.trim() || (myRole === 'husband' ? 'کاربر ۲' : 'کاربر ۱');
     const cleanPairCode = pairCode.trim();
 
     saveCoupleSettings({
@@ -297,6 +329,11 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     fetchRemotePartnerState().then((remote) => {
       if (remote) setPartnerState(remote);
     });
+    if (cleanPairCode) {
+      fetchPartnerSessions(cleanPairCode, cleanPartnerEmail).then((res) => {
+        if (res) setPartnerSessions(res);
+      });
+    }
   };
 
   const handleManualSync = async () => {
@@ -304,6 +341,10 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     setSbStatus('در حال اتصال و همگام‌سازی با سرور Supabase...');
     const res = await testSupabaseConnection();
     const remote = await fetchRemotePartnerState();
+    if (pairCode) {
+      const pSessions = await fetchPartnerSessions(pairCode, partnerEmail);
+      if (pSessions) setPartnerSessions(pSessions);
+    }
     if (remote) {
       setPartnerState(remote);
       setSbStatus('همگام‌سازی داده‌های زنده با موفقیت انجام شد.');
@@ -313,7 +354,7 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     setTimeout(() => setIsSyncing(false), 600);
   };
 
-  // Generate Weekly Comparative Data for Recharts
+  // Generate Weekly Comparative Data using actual stored records for both partners
   const weeklyData = weekDays.map((wd) => {
     const daySessions = (sessions || []).filter(
       (s) => s && !s.deleted_at && s.day === wd.iso
@@ -322,20 +363,51 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     const isToday = wd.iso === today;
     const myMins = Math.round((daySecs + (isToday ? liveTimerSeconds : 0)) / 60);
 
-    const partnerMins = isToday ? partnerTodayMinutes : 0;
+    // Actual stored partner sessions for this day
+    const pDaySessions = (partnerSessions || []).filter(
+      (s) => s && !s.deleted_at && s.day === wd.iso
+    );
+    const pDaySecs = pDaySessions.reduce((sum, s) => sum + (s.seconds || 0), 0);
+    const partnerMins = isToday
+      ? Math.max(partnerTodayMinutes, Math.round(pDaySecs / 60))
+      : Math.round(pDaySecs / 60);
 
     return {
       day: wd.weekdayName,
       [myName]: myMins,
       [partnerName]: partnerMins,
       myTests: daySessions.reduce((s, it) => s + (it.correct || 0) + (it.wrong || 0), 0),
-      partnerTests: isToday ? partnerState.todayTests : 0,
+      partnerTests: isToday
+        ? partnerState.todayTests
+        : pDaySessions.reduce((s, it) => s + (it.correct || 0) + (it.wrong || 0), 0),
     };
   });
 
   const totalWeekMyMinutes = weeklyData.reduce((sum, d) => sum + (Number(d[myName]) || 0), 0);
   const totalWeekPartnerMinutes = weeklyData.reduce((sum, d) => sum + (Number(d[partnerName]) || 0), 0);
   const weekWinner = totalWeekMyMinutes >= totalWeekPartnerMinutes ? myName : partnerName;
+
+  // Genuine Jalali Monthly Aggregation
+  const curJalaliMonthKey = jalaliMonthKey(today);
+  const curJalaliParts = jalaliPartsFromIso(today) || [1405, 1, 1];
+  const passedDaysInMonth = Math.max(1, curJalaliParts[2]);
+
+  const myMonthSessions = (sessions || []).filter(
+    (s) => !s.deleted_at && jalaliMonthKey(s.day) === curJalaliMonthKey
+  );
+  const myMonthTotalMinutes = Math.round(
+    (myMonthSessions.reduce((sum, s) => sum + (s.seconds || 0), 0) + liveTimerSeconds) / 60
+  );
+
+  const partnerMonthSessions = (partnerSessions || []).filter(
+    (s) => !s.deleted_at && jalaliMonthKey(s.day) === curJalaliMonthKey && s.day !== today
+  );
+  const partnerMonthTotalMinutes =
+    Math.round(partnerMonthSessions.reduce((sum, s) => sum + (s.seconds || 0), 0) / 60) +
+    partnerTodayMinutes;
+
+  const myDailyAvgInMonth = Math.round(myMonthTotalMinutes / passedDaysInMonth);
+  const partnerDailyAvgInMonth = Math.round(partnerMonthTotalMinutes / passedDaysInMonth);
 
   return (
     <div className="space-y-6 pb-14 animate-in fade-in duration-200">
@@ -942,31 +1014,15 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
             <form onSubmit={handleSavePairSettings} className="space-y-4 text-xs">
               <div>
                 <label className="block font-bold text-slate-600 dark:text-slate-300 mb-1">
-                  نقش من روی این دستگاه:
+                  نقش شما در اتاق (تعیین‌شده توسط سرور بر اساس ساخت یا پیوستن):
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleRoleQuickSwitch('husband')}
-                    className={`py-2 px-3 rounded-xl font-bold transition-all cursor-pointer ${
-                      myRole === 'husband'
-                        ? 'neu-btn-primary'
-                        : 'neu-raised-sm text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    همسر ۱ (امیرمحمد)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRoleQuickSwitch('wife')}
-                    className={`py-2 px-3 rounded-xl font-bold transition-all cursor-pointer ${
-                      myRole === 'wife'
-                        ? 'neu-btn-primary'
-                        : 'neu-raised-sm text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    همسر ۲ (آرمیتا)
-                  </button>
+                <div className="p-3 rounded-xl neu-inset flex items-center justify-between">
+                  <span className="font-extrabold text-blue-800 dark:text-blue-200">
+                    {myRole === 'husband' ? 'همسر ۱ (سازنده اتاق)' : 'همسر ۲ (عضو پیوسته به اتاق)'}
+                  </span>
+                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/60 dark:text-blue-300 font-bold">
+                    RLS تاییدشده
+                  </span>
                 </div>
               </div>
 

@@ -32,6 +32,7 @@ import {
 } from '../../lib/jalali';
 import { uid } from '../../lib/storage';
 import { extractOcrText } from '../../lib/ai';
+import { resolveMistakeImageUrl } from '../../lib/cloudSync';
 import { AnimatedDeleteButton } from '../AnimatedDeleteButton';
 
 interface MistakesViewProps {
@@ -43,6 +44,55 @@ interface MistakesViewProps {
   onToggleChecklistItem: (key: string) => void;
   onOpenLightbox: (src: string) => void;
 }
+
+const MistakeImageThumbnail: React.FC<{
+  imageData: string;
+  onOpenLightbox: (src: string) => void;
+}> = ({ imageData, onOpenLightbox }) => {
+  const [resolvedSrc, setResolvedSrc] = useState<string>(() =>
+    imageData.startsWith('data:') || imageData.startsWith('http') ? imageData : ''
+  );
+
+  React.useEffect(() => {
+    let isMounted = true;
+    resolveMistakeImageUrl(imageData).then((url) => {
+      if (isMounted && url) setResolvedSrc(url);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [imageData]);
+
+  if (!resolvedSrc) {
+    return (
+      <div className="w-24 h-24 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 text-[10px]">
+        در حال بارگذاری...
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        onClick={() => onOpenLightbox(resolvedSrc)}
+        className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 w-24 h-24 shrink-0 bg-slate-100"
+      >
+        <img
+          src={resolvedSrc}
+          alt="پیوست"
+          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+        />
+        <span className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold">
+          مشاهده
+        </span>
+      </button>
+      <span className="text-[11px] text-slate-400">
+        کلیک برای بزرگ‌نمایی تصویر
+      </span>
+    </div>
+  );
+};
 
 const REVIEW_STAGES = [
   { id: 'study', label: 'مطالعه اصلی' },
@@ -278,25 +328,10 @@ export const MistakesView: React.FC<MistakesViewProps> = ({
 
                   {/* Thumbnail if Image Attached */}
                   {card.image_data && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onOpenLightbox(card.image_data!)}
-                        className="group relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 w-24 h-24 shrink-0 bg-slate-100"
-                      >
-                        <img
-                          src={card.image_data}
-                          alt="پیوست"
-                          className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        />
-                        <span className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white text-[10px] font-bold">
-                          مشاهده
-                        </span>
-                      </button>
-                      <span className="text-[11px] text-slate-400">
-                        کلیک برای بزرگ‌نمایی تصویر
-                      </span>
-                    </div>
+                    <MistakeImageThumbnail
+                      imageData={card.image_data}
+                      onOpenLightbox={onOpenLightbox}
+                    />
                   )}
 
                   {/* Action Buttons: Remembered vs Forgot */}

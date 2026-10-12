@@ -9,10 +9,22 @@ import {
 } from '../types';
 import { getSupabaseClient } from './supabase';
 import { getCoupleSettings } from './coupleSync';
+import { studyDayKey } from './jalali';
+import {
+  loadSessions,
+  loadExams,
+  loadMistakes,
+  loadPlans,
+  loadNotes,
+  loadProgress,
+  loadChecklist,
+  loadSettings,
+} from './storage';
+import { mapDatabaseToExam, mapDatabaseToMistake, mapExamToDatabase, mapMistakeToDatabase } from './schemaValidator';
 
 export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'error';
 
-interface OutboxItem {
+export interface OutboxItem {
   id: string;
   type: 'session' | 'exam' | 'mistake' | 'plan' | 'note' | 'progress' | 'checklist' | 'settings';
   payload: any;
@@ -56,20 +68,22 @@ function saveOutbox(items: OutboxItem[]) {
   } catch {}
 }
 
-function queueForSync(type: OutboxItem['type'], payload: any) {
+export function queueForSync(type: OutboxItem['type'], payload: any) {
   const outbox = loadOutbox();
-  const existingIndex = outbox.findIndex((item) => item.id === payload.id && item.type === type);
+  const itemId = payload.id || `sync-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const existingIndex = outbox.findIndex((item) => item.id === itemId && item.type === type);
+
   if (existingIndex >= 0) {
     outbox[existingIndex] = {
-      id: payload.id,
+      id: itemId,
       type,
       payload,
-      retryCount: 0,
+      retryCount: outbox[existingIndex].retryCount,
       addedAt: Date.now(),
     };
   } else {
     outbox.push({
-      id: payload.id || `sync-${Date.now()}`,
+      id: itemId,
       type,
       payload,
       retryCount: 0,
@@ -80,33 +94,119 @@ function queueForSync(type: OutboxItem['type'], payload: any) {
   setSyncStatus('pending');
 }
 
-async function getAuthUserId(): Promise<string | null> {
+export async function getAuthUserId(): Promise<string | null> {
   try {
     const supabase = getSupabaseClient();
     if (!supabase) return null;
-    const { data } = await supabase.auth.getSession();
-    return data?.session?.user?.id || null;
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data?.session?.user) return null;
+    return data.session.user.id || null;
   } catch {
     return null;
   }
 }
 
 /**
- * Push Session to Supabase with proper columns (including book, goftar, user_id)
+ * Upload base64 image to private Supabase Storage bucket 'question-images'
+ * File path scoped strictly to authenticated user UID: `${userId}/${cardId}.${ext}`
  */
-export async function pushSessionToCloud(session: Session): Promise<void> {
+export async function uploadMistakeImageToStorage(
+  cardId: string,
+  base64DataUrl: string,
+  userId: string
+): Promise<string | null> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
-  const userId = await getAuthUserId();
+  if (!supabase || !base64DataUrl.startsWith('data:image/') || !userId) return null;
 
-  if (!supabase) {
-    queueForSync('session', session);
-    return;
+  try {
+    const commaIndex = base64DataUrl.indexOf(',');
+    if (commaIndex === -1) return null;
+    const header = base64DataUrl.slice(0, commaIndex);
+    const rawB64 = base64DataUrl.slice(commaIndex + 1);
+    const mimeMatch = header.match(/:(.*?);/);
+    const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+
+    // Validate mime type
+    const validMimes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+    if (!validMimes.includes(mimeType)) {
+      console.warn('Unsupported image MIME type for upload:', mimeType);
+      return null;
+    }
+
+    const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+
+    // Decode base64
+    const byteCharacters = atob(rawB64);
+    if (byteCharacters.length > 10 * 1024 * 1024) {
+      console.warn('Image exceeds max allowed size of 10MB.');
+      return null;
+    }
+
+    const byteNumbers = new Uint8Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+
+    const filePath = `${userId}/${cardId}.${ext}`;
+    const { error } = await supabase.storage
+      .from('question-images')
+      .upload(filePath, byteNumbers, { contentType: mimeType, upsert: true });
+
+    if (error) {
+      console.warn('Storage upload error:', error.message);
+      return null;
+    }
+    return filePath;
+  } catch (err) {
+    console.warn('Failed to upload mistake image to storage:', err);
+    return null;
+  }
+}
+
+/**
+ * Resolve mistake image URL (generates signed URL for storage paths)
+ */
+export async function resolveMistakeImageUrl(rawImage: string | null | undefined): Promise<string | null> {
+  if (!rawImage) return null;
+  // If already a data URL or absolute web URL, return directly
+  if (rawImage.startsWith('data:image/') || rawImage.startsWith('http://') || rawImage.startsWith('https://')) {
+    return rawImage;
+  }
+
+  const supabase = getSupabaseClient();
+  if (!supabase) return null;
+
+  try {
+    const { data, error } = await supabase.storage
+      .from('question-images')
+      .createSignedUrl(rawImage, 86400); // 24 hours
+    if (error || !data?.signedUrl) return null;
+    return data.signedUrl;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Push Session to Supabase
+ */
+export async function pushSessionToCloud(
+  session: Session,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
+
+  // If user is not logged in, NEVER send null user_id; preserve locally in outbox
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('session', session);
+    return false;
   }
 
   setSyncStatus('syncing');
   try {
-    const { error } = await supabase.from('sessions').upsert({
+    const payload = {
       id: session.id,
       user_id: userId,
       created_at: session.created_at,
@@ -126,116 +226,124 @@ export async function pushSessionToCloud(session: Session): Promise<void> {
       note: session.note || '',
       day: session.day,
       type: session.type,
-    });
+    };
 
-    if (error) throw error;
+    const { error } = await supabase.from('sessions').upsert(payload);
+
+    if (error) {
+      console.warn('Error pushing session:', error.message);
+      if (!options?.skipQueue) queueForSync('session', session);
+      setSyncStatus('error');
+      return false;
+    }
     setSyncStatus('synced');
+    return true;
   } catch (err) {
-    console.warn('Queueing session for offline sync:', err);
-    queueForSync('session', session);
-    setSyncStatus('pending');
+    console.warn('Network error pushing session:', err);
+    if (!options?.skipQueue) queueForSync('session', session);
+    setSyncStatus('error');
+    return false;
   }
 }
 
 /**
  * Push Exam to Supabase
  */
-export async function pushExamToCloud(exam: Exam): Promise<void> {
+export async function pushExamToCloud(
+  exam: Exam,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) {
-    queueForSync('exam', exam);
-    return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('exam', exam);
+    return false;
   }
 
   setSyncStatus('syncing');
   try {
-    const { error } = await supabase.from('exams').upsert({
-      id: exam.id,
-      user_id: userId,
-      created_at: exam.created_at,
-      updated_at: exam.updated_at || Date.now(),
-      deleted_at: exam.deleted_at || null,
-      device_id: exam.device_id || 'client',
-      pair_code: pairCode || null,
-      user_email: myEmail || null,
-      subject: exam.subject,
-      day: exam.day,
-      correct: exam.correct || 0,
-      wrong: exam.wrong || 0,
-      blank: exam.blank || 0,
-      duration: exam.duration || 0,
-      percent: exam.percent || 0,
-      note: exam.note || '',
-    });
+    const payload = mapExamToDatabase(exam, userId, pairCode, myEmail);
 
-    if (error) throw error;
+    const { error } = await supabase.from('exams').upsert(payload);
+
+    if (error) {
+      console.warn('Error pushing exam:', error.message);
+      if (!options?.skipQueue) queueForSync('exam', exam);
+      setSyncStatus('error');
+      return false;
+    }
     setSyncStatus('synced');
+    return true;
   } catch (err) {
-    console.warn('Queueing exam for offline sync:', err);
-    queueForSync('exam', exam);
-    setSyncStatus('pending');
+    console.warn('Network error pushing exam:', err);
+    if (!options?.skipQueue) queueForSync('exam', exam);
+    setSyncStatus('error');
+    return false;
   }
 }
 
 /**
- * Push Mistake to Supabase
+ * Push Mistake to Supabase with image upload
  */
-export async function pushMistakeToCloud(card: MistakeCard): Promise<void> {
+export async function pushMistakeToCloud(
+  card: MistakeCard,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) {
-    queueForSync('mistake', card);
-    return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('mistake', card);
+    return false;
   }
 
   setSyncStatus('syncing');
   try {
-    const { error } = await supabase.from('mistakes').upsert({
-      id: card.id,
-      user_id: userId,
-      created_at: card.created_at,
-      updated_at: card.updated_at || Date.now(),
-      deleted_at: card.deleted_at || null,
-      device_id: card.device_id || 'client',
-      pair_code: pairCode || null,
-      user_email: myEmail || null,
-      subject: card.subject,
-      chapter: card.chapter || null,
-      cause: card.cause,
-      question: card.question,
-      source: card.source || null,
-      importance: card.importance || 3,
-      image_data: card.image_data || null,
-      box: card.box || 1,
-      next_review: card.next_review,
-      history: card.history || [],
-    });
+    let finalImageData = card.image_data || null;
+    if (finalImageData && finalImageData.startsWith('data:image/')) {
+      const storagePath = await uploadMistakeImageToStorage(card.id, finalImageData, userId);
+      if (storagePath) {
+        finalImageData = storagePath;
+      }
+    }
 
-    if (error) throw error;
+    const payload = mapMistakeToDatabase(card, userId, pairCode, myEmail, finalImageData);
+
+    const { error } = await supabase.from('mistakes').upsert(payload);
+
+    if (error) {
+      console.warn('Error pushing mistake:', error.message);
+      if (!options?.skipQueue) queueForSync('mistake', card);
+      setSyncStatus('error');
+      return false;
+    }
     setSyncStatus('synced');
+    return true;
   } catch (err) {
-    console.warn('Queueing mistake for offline sync:', err);
-    queueForSync('mistake', card);
-    setSyncStatus('pending');
+    console.warn('Network error pushing mistake:', err);
+    if (!options?.skipQueue) queueForSync('mistake', card);
+    setSyncStatus('error');
+    return false;
   }
 }
 
 /**
- * Push Plan to Supabase
+ * Push Daily Plan to Supabase
  */
-export async function pushPlanToCloud(plan: DailyPlan): Promise<void> {
+export async function pushPlanToCloud(
+  plan: DailyPlan,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) {
-    queueForSync('plan', plan);
-    return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('plan', plan);
+    return false;
   }
 
   setSyncStatus('syncing');
@@ -254,30 +362,40 @@ export async function pushPlanToCloud(plan: DailyPlan): Promise<void> {
       items: plan.items || [],
     });
 
-    if (error) throw error;
+    if (error) {
+      console.warn('Error pushing plan:', error.message);
+      if (!options?.skipQueue) queueForSync('plan', plan);
+      setSyncStatus('error');
+      return false;
+    }
     setSyncStatus('synced');
+    return true;
   } catch (err) {
-    console.warn('Queueing plan for offline sync:', err);
-    queueForSync('plan', plan);
-    setSyncStatus('pending');
+    console.warn('Network error pushing plan:', err);
+    if (!options?.skipQueue) queueForSync('plan', plan);
+    setSyncStatus('error');
+    return false;
   }
 }
 
 /**
  * Push Quick Note to Supabase
  */
-export async function pushNoteToCloud(note: QuickNote): Promise<void> {
+export async function pushNoteToCloud(
+  note: QuickNote,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) {
-    queueForSync('note', note);
-    return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('note', note);
+    return false;
   }
 
   try {
-    await supabase.from('quick_notes').upsert({
+    const { error } = await supabase.from('quick_notes').upsert({
       id: note.id,
       user_id: userId,
       created_at: note.created_at || Date.now(),
@@ -290,26 +408,37 @@ export async function pushNoteToCloud(note: QuickNote): Promise<void> {
       text: note.text,
       ts: note.ts || Date.now(),
     });
+
+    if (error) {
+      console.warn('Error pushing note:', error.message);
+      if (!options?.skipQueue) queueForSync('note', note);
+      return false;
+    }
+    return true;
   } catch (err) {
-    queueForSync('note', note);
+    if (!options?.skipQueue) queueForSync('note', note);
+    return false;
   }
 }
 
 /**
  * Push Progress Entry to Supabase
  */
-export async function pushProgressToCloud(entry: ProgressEntry): Promise<void> {
+export async function pushProgressToCloud(
+  entry: ProgressEntry,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) {
-    queueForSync('progress', entry);
-    return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('progress', entry);
+    return false;
   }
 
   try {
-    await supabase.from('progress_entries').upsert({
+    const { error } = await supabase.from('progress_entries').upsert({
       id: entry.id,
       user_id: userId,
       created_at: entry.created_at || Date.now(),
@@ -323,24 +452,40 @@ export async function pushProgressToCloud(entry: ProgressEntry): Promise<void> {
       chapter: entry.chapter,
       note: entry.note || '',
     });
+
+    if (error) {
+      console.warn('Error pushing progress:', error.message);
+      if (!options?.skipQueue) queueForSync('progress', entry);
+      return false;
+    }
+    return true;
   } catch (err) {
-    queueForSync('progress', entry);
+    if (!options?.skipQueue) queueForSync('progress', entry);
+    return false;
   }
 }
 
 /**
- * Push User Checklist to Supabase
+ * Push User Checklist to Supabase with stable ID
  */
-export async function pushChecklistToCloud(day: string, checklist: Record<string, boolean>): Promise<void> {
+export async function pushChecklistToCloud(
+  day: string,
+  checklist: Record<string, boolean>,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
   const supabase = getSupabaseClient();
-  const { pairCode, myEmail } = getCoupleSettings();
   const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
 
-  if (!supabase) return;
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}`, day, items: checklist });
+    return false;
+  }
 
   try {
-    await supabase.from('user_checklists').upsert({
-      id: `chk-${day}`,
+    const stableId = `chk-${day}-${userId}`;
+    const { error } = await supabase.from('user_checklists').upsert({
+      id: stableId,
       user_id: userId,
       created_at: Date.now(),
       updated_at: Date.now(),
@@ -349,21 +494,36 @@ export async function pushChecklistToCloud(day: string, checklist: Record<string
       day,
       items: checklist,
     });
-  } catch {}
+
+    if (error) {
+      console.warn('Error pushing checklist:', error.message);
+      if (!options?.skipQueue) queueForSync('checklist', { id: stableId, day, items: checklist });
+      return false;
+    }
+    return true;
+  } catch {
+    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}`, day, items: checklist });
+    return false;
+  }
 }
 
 /**
- * Push App Settings to Supabase (NEVER leaks API keys!)
+ * Push App Settings to Supabase (NEVER leaks API keys to cloud)
  */
-export async function pushSettingsToCloud(settings: AppSettings): Promise<void> {
+export async function pushSettingsToCloud(
+  settings: AppSettings,
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  const userId = await getAuthUserId();
+  const { pairCode, myEmail } = getCoupleSettings();
+
+  if (!supabase || !userId) {
+    if (!options?.skipQueue) queueForSync('settings', { id: 'user-settings', ...settings });
+    return false;
+  }
+
   try {
-    const supabase = getSupabaseClient();
-    if (!supabase) return;
-
-    const userId = await getAuthUserId();
-    const { pairCode, myEmail } = getCoupleSettings();
-
-    // CRITICAL SECURITY HARDENING: Strip sensitive user API keys before cloud push
     const sanitizedSettings: AppSettings = {
       ...settings,
       ai: {
@@ -373,18 +533,24 @@ export async function pushSettingsToCloud(settings: AppSettings): Promise<void> 
       },
     };
 
-    if (userId) {
-      await supabase.from('user_settings').upsert({
-        user_id: userId,
-        device_id: settings.deviceId || 'client',
-        pair_code: pairCode || null,
-        user_email: myEmail || null,
-        settings: sanitizedSettings,
-        updated_at: Date.now(),
-      });
+    const { error } = await supabase.from('user_settings').upsert({
+      user_id: userId,
+      device_id: settings.deviceId || 'client',
+      pair_code: pairCode || null,
+      user_email: myEmail || null,
+      settings: sanitizedSettings,
+      updated_at: Date.now(),
+    });
+
+    if (error) {
+      console.warn('Error pushing settings:', error.message);
+      if (!options?.skipQueue) queueForSync('settings', { id: 'user-settings', ...settings });
+      return false;
     }
+    return true;
   } catch (err) {
-    console.warn('Silent cloud settings sync notice:', err);
+    if (!options?.skipQueue) queueForSync('settings', { id: 'user-settings', ...settings });
+    return false;
   }
 }
 
@@ -399,17 +565,15 @@ export async function fetchCloudSettings(): Promise<AppSettings | null> {
     const userId = await getAuthUserId();
     if (!userId) return null;
 
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('user_settings')
       .select('settings')
       .eq('user_id', userId)
       .limit(1)
       .maybeSingle();
 
-    if (data && data.settings) {
-      return data.settings as AppSettings;
-    }
-    return null;
+    if (error || !data?.settings) return null;
+    return data.settings as AppSettings;
   } catch {
     return null;
   }
@@ -495,6 +659,8 @@ export async function fetchCloudData(customEmail?: string): Promise<{
       pQuery = pQuery.eq('pair_code', pairCode);
       nQuery = nQuery.eq('pair_code', pairCode);
       prQuery = prQuery.eq('pair_code', pairCode);
+    } else {
+      return null;
     }
 
     const [sessionsRes, examsRes, mistakesRes, plansRes, notesRes, progressRes] = await Promise.all([
@@ -506,10 +672,13 @@ export async function fetchCloudData(customEmail?: string): Promise<{
       prQuery,
     ]);
 
+    const mappedExams = (examsRes.data || []).map(mapDatabaseToExam);
+    const mappedMistakes = (mistakesRes.data || []).map(mapDatabaseToMistake);
+
     return {
       sessions: sessionsRes.data || [],
-      exams: examsRes.data || [],
-      mistakes: mistakesRes.data || [],
+      exams: mappedExams,
+      mistakes: mappedMistakes,
       plans: plansRes.data || [],
       notes: notesRes.data || [],
       progress: progressRes.data || [],
@@ -524,7 +693,7 @@ export async function fetchCloudData(customEmail?: string): Promise<{
 /**
  * Fetch partner's sessions specifically for couple comparison charts
  */
-export async function fetchPartnerSessions(pairCode: string, partnerEmail: string): Promise<Session[]> {
+export async function fetchPartnerSessions(pairCode: string, partnerEmail?: string): Promise<Session[]> {
   try {
     const supabase = getSupabaseClient();
     if (!supabase || !pairCode) return [];
@@ -540,7 +709,11 @@ export async function fetchPartnerSessions(pairCode: string, partnerEmail: strin
       q = q.eq('user_email', partnerEmail.trim().toLowerCase());
     }
 
-    const { data } = await q;
+    const { data, error } = await q;
+    if (error) {
+      console.warn('Error fetching partner sessions:', error.message);
+      return [];
+    }
     return data || [];
   } catch {
     return [];
@@ -548,46 +721,128 @@ export async function fetchPartnerSessions(pairCode: string, partnerEmail: strin
 }
 
 /**
- * Flush offline outbox queue with exponential retry
+ * Flush offline outbox queue with atomic success tracking (never overwrites newly queued items)
  */
 export async function flushOutboxQueue(): Promise<void> {
-  const outbox = loadOutbox();
-  if (outbox.length === 0) {
+  const currentOutbox = loadOutbox();
+  if (currentOutbox.length === 0) {
     setSyncStatus('synced');
     return;
   }
 
   const supabase = getSupabaseClient();
-  if (!supabase || typeof navigator !== 'undefined' && !navigator.onLine) {
+  if (!supabase || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    setSyncStatus('pending');
+    return;
+  }
+
+  const userId = await getAuthUserId();
+  if (!userId) {
     setSyncStatus('pending');
     return;
   }
 
   setSyncStatus('syncing');
-  const remaining: OutboxItem[] = [];
+  const succeededIds = new Set<string>();
+  const failedIncrements = new Map<string, number>();
 
-  for (const item of outbox) {
+  for (const item of currentOutbox) {
     try {
+      let success = false;
       if (item.type === 'session') {
-        await pushSessionToCloud(item.payload);
+        success = await pushSessionToCloud(item.payload, { skipQueue: true });
       } else if (item.type === 'exam') {
-        await pushExamToCloud(item.payload);
+        success = await pushExamToCloud(item.payload, { skipQueue: true });
       } else if (item.type === 'mistake') {
-        await pushMistakeToCloud(item.payload);
+        success = await pushMistakeToCloud(item.payload, { skipQueue: true });
       } else if (item.type === 'plan') {
-        await pushPlanToCloud(item.payload);
+        success = await pushPlanToCloud(item.payload, { skipQueue: true });
       } else if (item.type === 'note') {
-        await pushNoteToCloud(item.payload);
+        success = await pushNoteToCloud(item.payload, { skipQueue: true });
       } else if (item.type === 'progress') {
-        await pushProgressToCloud(item.payload);
+        success = await pushProgressToCloud(item.payload, { skipQueue: true });
+      } else if (item.type === 'checklist') {
+        success = await pushChecklistToCloud(item.payload.day, item.payload.items, { skipQueue: true });
+      } else if (item.type === 'settings') {
+        success = await pushSettingsToCloud(item.payload, { skipQueue: true });
+      }
+
+      if (success) {
+        succeededIds.add(item.id);
+      } else {
+        failedIncrements.set(item.id, (item.retryCount || 0) + 1);
       }
     } catch {
-      if (item.retryCount < 5) {
-        remaining.push({ ...item, retryCount: item.retryCount + 1 });
-      }
+      failedIncrements.set(item.id, (item.retryCount || 0) + 1);
     }
   }
 
-  saveOutbox(remaining);
-  setSyncStatus(remaining.length > 0 ? 'pending' : 'synced');
+  // Atomically update outbox queue from fresh storage
+  const freshOutbox = loadOutbox();
+  const updatedOutbox = freshOutbox
+    .filter((item) => !succeededIds.has(item.id))
+    .map((item) => {
+      const increment = failedIncrements.get(item.id);
+      if (increment !== undefined) {
+        return { ...item, retryCount: increment };
+      }
+      return item;
+    })
+    .filter((item) => item.retryCount <= 5); // Bounded retry count
+
+  saveOutbox(updatedOutbox);
+  setSyncStatus(updatedOutbox.length > 0 ? 'pending' : 'synced');
+}
+
+/**
+ * Migrate and synchronize all local data to cloud on first login (with proper user_id)
+ */
+export async function syncAllLocalDataToCloud(userId: string): Promise<void> {
+  if (!userId) return;
+
+  const migrationKey = `ky_local_data_migrated_${userId}`;
+  if (typeof window !== 'undefined' && localStorage.getItem(migrationKey) === 'true') {
+    return;
+  }
+
+  try {
+    const sessions = loadSessions();
+    for (const s of sessions) {
+      await pushSessionToCloud(s);
+    }
+    const exams = loadExams();
+    for (const e of exams) {
+      await pushExamToCloud(e);
+    }
+    const mistakes = loadMistakes();
+    for (const m of mistakes) {
+      await pushMistakeToCloud(m);
+    }
+    const plans = loadPlans();
+    for (const p of plans) {
+      await pushPlanToCloud(p);
+    }
+    const notes = loadNotes();
+    for (const n of notes) {
+      await pushNoteToCloud(n);
+    }
+    const progress = loadProgress();
+    for (const pr of progress) {
+      await pushProgressToCloud(pr);
+    }
+    const checklist = loadChecklist();
+    if (checklist && Object.keys(checklist).length > 0) {
+      await pushChecklistToCloud(studyDayKey(), checklist);
+    }
+    const settings = loadSettings();
+    if (settings) {
+      await pushSettingsToCloud(settings);
+    }
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(migrationKey, 'true');
+    }
+  } catch (err) {
+    console.warn('Initial data migration notice:', err);
+  }
 }

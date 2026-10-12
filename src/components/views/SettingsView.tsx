@@ -30,6 +30,7 @@ import {
 } from '../../lib/supabase';
 import { pushSettingsToCloud } from '../../lib/cloudSync';
 import { Database } from 'lucide-react';
+import { ConfirmModal } from '../common/ConfirmModal';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -76,6 +77,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [isTesting, setIsTesting] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+
+  // Dialog state
+  const [dialogConfig, setDialogConfig] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    isDestructive?: boolean;
+    isAlertOnly?: boolean;
+    onConfirm: () => void;
+  }>({
+    isOpen: false,
+    title: '',
+    message: '',
+    onConfirm: () => {},
+  });
 
   const handleSaveGeneral = (e: React.FormEvent) => {
     e.preventDefault();
@@ -132,10 +148,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       const text = reader.result as string;
       const ok = importAllDataJson(text);
       if (ok) {
-        alert('اطلاعات با موفقیت بازیابی شد!');
-        onDataImported();
+        setDialogConfig({
+          isOpen: true,
+          title: 'بازیابی اطلاعات',
+          message: 'اطلاعات با موفقیت از فایل پشتیبان بازیابی شد!',
+          isAlertOnly: true,
+          onConfirm: () => {
+            setDialogConfig((prev) => ({ ...prev, isOpen: false }));
+            onDataImported();
+          },
+        });
       } else {
-        alert('فرمت فایل پشتیبان نامعتبر است.');
+        setDialogConfig({
+          isOpen: true,
+          title: 'خطای فایل پشتیبان',
+          message: 'فرمت فایل پشتیبان نامعتبر است یا با ساختار کنکوریار همخوانی ندارد.',
+          isAlertOnly: true,
+          isDestructive: true,
+          onConfirm: () => setDialogConfig((prev) => ({ ...prev, isOpen: false })),
+        });
       }
     };
     reader.readAsText(file);
@@ -551,50 +582,92 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <button
+            type="button"
             onClick={() => {
-              if (confirm('آیا از پاک کردن تمامی جلسات مطالعه اطمینان دارید؟')) {
-                onWipeCategory('sessions');
-              }
+              setDialogConfig({
+                isOpen: true,
+                title: 'پاکسازی جلسات مطالعه',
+                message: 'آیا از پاک کردن تمامی جلسات مطالعه ثبت‌شده اطمینان دارید؟ این عمل غیرقابل بازگشت است.',
+                isDestructive: true,
+                onConfirm: () => {
+                  setDialogConfig((prev) => ({ ...prev, isOpen: false }));
+                  onWipeCategory('sessions');
+                },
+              });
             }}
-            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold"
+            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold cursor-pointer"
           >
             پاکسازی جلسات مطالعه
           </button>
 
           <button
+            type="button"
             onClick={() => {
-              if (confirm('آیا از پاک کردن تمامی آزمون‌ها اطمینان دارید؟')) {
-                onWipeCategory('exams');
-              }
+              setDialogConfig({
+                isOpen: true,
+                title: 'پاکسازی کارنامه‌ها',
+                message: 'آیا از پاک کردن تمامی آزمون‌ها و کارنامه‌ها اطمینان دارید؟',
+                isDestructive: true,
+                onConfirm: () => {
+                  setDialogConfig((prev) => ({ ...prev, isOpen: false }));
+                  onWipeCategory('exams');
+                },
+              });
             }}
-            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold"
+            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold cursor-pointer"
           >
             پاکسازی کارنامه‌ها
           </button>
 
           <button
+            type="button"
             onClick={() => {
-              if (confirm('آیا از پاک کردن دفترچه اشتباهات اطمینان دارید؟')) {
-                onWipeCategory('mistakes');
-              }
+              setDialogConfig({
+                isOpen: true,
+                title: 'پاکسازی دفترچه اشتباهات',
+                message: 'آیا از پاک کردن تمامی کارت‌های دفترچه اشتباهات اطمینان دارید؟',
+                isDestructive: true,
+                onConfirm: () => {
+                  setDialogConfig((prev) => ({ ...prev, isOpen: false }));
+                  onWipeCategory('mistakes');
+                },
+              });
             }}
-            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold"
+            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold cursor-pointer"
           >
             پاکسازی دفترچه اشتباهات
           </button>
 
           <button
+            type="button"
             onClick={() => {
-              if (confirm('آیا از پاک کردن برنامه‌های روزانه اطمینان دارید؟')) {
-                onWipeCategory('plans');
-              }
+              setDialogConfig({
+                isOpen: true,
+                title: 'پاکسازی برنامه‌های روزانه',
+                message: 'آیا از پاک کردن تمامی برنامه‌های روزانه ثبت‌شده اطمینان دارید؟',
+                isDestructive: true,
+                onConfirm: () => {
+                  setDialogConfig((prev) => ({ ...prev, isOpen: false }));
+                  onWipeCategory('plans');
+                },
+              });
             }}
-            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold"
+            className="px-3 py-1.5 rounded-lg border border-rose-200 dark:border-rose-900 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-bold cursor-pointer"
           >
             پاکسازی برنامه‌های روزانه
           </button>
         </div>
       </div>
+
+      <ConfirmModal
+        isOpen={dialogConfig.isOpen}
+        title={dialogConfig.title}
+        message={dialogConfig.message}
+        isDestructive={dialogConfig.isDestructive}
+        isAlertOnly={dialogConfig.isAlertOnly}
+        onConfirm={dialogConfig.onConfirm}
+        onCancel={() => setDialogConfig((prev) => ({ ...prev, isOpen: false }))}
+      />
     </div>
   );
 };

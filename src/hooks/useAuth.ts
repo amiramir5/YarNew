@@ -6,8 +6,8 @@ import {
   signInWithEmail,
   signUpWithEmail,
   signOutUser,
-  switchActiveUser,
   resetPasswordForEmail,
+  updateUserPassword,
 } from '../lib/auth';
 
 export function useAuth() {
@@ -31,7 +31,7 @@ export function useAuth() {
     signIn: signInWithEmail,
     signUp: signUpWithEmail,
     signOut: signOutUser,
-    switchUser: switchActiveUser,
     resetPassword: resetPasswordForEmail,
+    updatePassword: updateUserPassword,
   };
 }

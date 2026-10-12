@@ -55,7 +55,17 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match('./index.html') || caches.match(event.request))
+        .catch(async () => {
+          const matched = (await caches.match('./index.html')) || (await caches.match(event.request));
+          return (
+            matched ||
+            new Response('Offline - کنکوریار ۲.۰', {
+              status: 503,
+              statusText: 'Service Unavailable',
+              headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            })
+          );
+        })
     );
     return;
   }

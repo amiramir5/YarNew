@@ -29,6 +29,7 @@ import { Subject3DIcon } from '../common/Subject3DIcon';
 import { StudyDistributionPieChart } from '../common/StudyDistributionPieChart';
 import { Session, ViewId } from '../../types';
 import { CoupleMemberState } from '../../lib/coupleSync';
+import { requestAppWakeLock, releaseAppWakeLock, isAppWakeLockActive } from '../../lib/wakeLock';
 
 interface TimerViewProps {
   elapsedSeconds: number;
@@ -88,7 +89,6 @@ export const TimerView: React.FC<TimerViewProps> = ({
   const [internalBook, setInternalBook] = useState<string>(activeBook);
   const selectedBook = activeBook || internalBook;
   const [wakeLockActive, setWakeLockActive] = useState(false);
-  const [wakeLockObj, setWakeLockObj] = useState<any>(null);
   const [wakeLockSupported, setWakeLockSupported] = useState(true);
   const [categoryFilter, setCategoryFilter] = useState<'all' | 'konkoor' | 'final'>('all');
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
@@ -105,74 +105,29 @@ export const TimerView: React.FC<TimerViewProps> = ({
   });
 
   useEffect(() => {
-    setWakeLockSupported('wakeLock' in navigator);
+    setWakeLockSupported(typeof navigator !== 'undefined' && 'wakeLock' in navigator);
   }, []);
 
-  // Request or Release screen wake lock safely
-  const releaseWakeLock = async () => {
-    if (wakeLockObj) {
-      try {
-        await wakeLockObj.release();
-      } catch (_) {}
-      setWakeLockObj(null);
-    }
-    setWakeLockActive(false);
-  };
-
-  const acquireWakeLock = async () => {
-    if ('wakeLock' in navigator) {
-      try {
-        const lock = await (navigator as any).wakeLock.request('screen');
-        setWakeLockObj(lock);
-        setWakeLockActive(true);
-        lock.addEventListener('release', () => {
-          setWakeLockActive(false);
-          setWakeLockObj(null);
-        });
-        return true;
-      } catch (err) {
-        // Fallback simulate active state for user experience if permission denied
-        setWakeLockActive(true);
-        return false;
-      }
-    } else {
-      // In browsers without WakeLock API, still allow toggling the preference state in UI
-      setWakeLockActive(true);
-      return false;
-    }
-  };
-
-  // Auto WakeLock when timer is active + re-acquire on visibility change
+  // Sync wake lock with timer running state
   useEffect(() => {
     if (isRunning) {
-      acquireWakeLock();
+      requestAppWakeLock().then((active) => {
+        setWakeLockActive(active || true);
+      });
     } else {
-      releaseWakeLock();
+      releaseAppWakeLock();
+      setWakeLockActive(false);
     }
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && isRunning && wakeLockActive) {
-        acquireWakeLock();
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (wakeLockObj) {
-        try {
-          wakeLockObj.release();
-        } catch (_) {}
-      }
-    };
   }, [isRunning]);
 
   // Manual Wake lock toggle (allows user to turn ON and OFF at any time)
   const toggleWakeLock = async () => {
     if (wakeLockActive) {
-      await releaseWakeLock();
+      await releaseAppWakeLock();
+      setWakeLockActive(false);
     } else {
-      await acquireWakeLock();
+      const active = await requestAppWakeLock();
+      setWakeLockActive(active || true);
     }
   };
 

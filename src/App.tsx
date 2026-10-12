@@ -51,6 +51,7 @@ import {
   fetchCloudData,
   mergeWithLastWriteWins,
   flushOutboxQueue,
+  syncAllLocalDataToCloud,
 } from './lib/cloudSync';
 import {
   broadcastMyState,
@@ -60,7 +61,9 @@ import {
   savePartnerState,
   CoupleMemberState,
 } from './lib/coupleSync';
+import { requestAppWakeLock, releaseAppWakeLock } from './lib/wakeLock';
 
+import { getSupabaseClient } from './lib/supabase';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
@@ -101,7 +104,53 @@ export default function App() {
   const [progressList, setProgressList] = useState<ProgressEntry[]>(() => loadProgress());
   const [checklist, setChecklist] = useState<Record<string, boolean>>(() => loadChecklist());
 
-  const [activeView, setActiveView] = useState<ViewId>('home');
+  const [activeView, setActiveView] = useState<ViewId>(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get('tab');
+      if (tab === 'leitner') return 'mistakes';
+      if (tab === 'daily') return 'plan';
+      if (tab === 'weekly') return 'stats';
+      const validTabs: ViewId[] = [
+        'home',
+        'timer',
+        'exams',
+        'mistakes',
+        'sim',
+        'plan',
+        'stats',
+        'monthly',
+        'ai',
+        'couple',
+        'settings',
+        'diag',
+      ];
+      if (tab && validTabs.includes(tab as ViewId)) {
+        return tab as ViewId;
+      }
+    }
+    return 'home';
+  });
+
+  // Keep URL query parameter synchronized with active view (supports PWA shortcuts and browser history)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (activeView === 'home') {
+      url.searchParams.delete('tab');
+    } else {
+      url.searchParams.set('tab', activeView);
+    }
+    window.history.replaceState({}, '', url.toString());
+
+    const handlePopState = () => {
+      const p = new URLSearchParams(window.location.search);
+      const currentTab = p.get('tab') as ViewId;
+      if (currentTab) setActiveView(currentTab);
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [activeView]);
 
   // Study Timer Core State (Resilient to tab switch, page reload, and lock screen)
   const [activeSubject, setActiveSubject] = useState<string>('bio');
@@ -177,30 +226,12 @@ export default function App() {
   const sessionsRef = useRef(sessions);
   const timerStartedAtRef = useRef(timerStartedAt);
   const accumulatedMsRef = useRef(accumulatedMs);
-  const wakeLockRef = useRef<any>(null);
-
-  useEffect(() => { isTimerRunningRef.current = isTimerRunning; }, [isTimerRunning]);
-  useEffect(() => { elapsedSecondsRef.current = elapsedSeconds; }, [elapsedSeconds]);
-  useEffect(() => { activeSubjectRef.current = activeSubject; }, [activeSubject]);
-  useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
-  useEffect(() => { timerStartedAtRef.current = timerStartedAt; }, [timerStartedAt]);
-  useEffect(() => { accumulatedMsRef.current = accumulatedMs; }, [accumulatedMs]);
-
   const requestWakeLock = async () => {
-    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
-      try {
-        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
-      } catch {}
-    }
+    await requestAppWakeLock();
   };
 
   const releaseWakeLock = () => {
-    if (wakeLockRef.current) {
-      try {
-        wakeLockRef.current.release();
-      } catch {}
-      wakeLockRef.current = null;
-    }
+    releaseAppWakeLock();
   };
 
   // Initial Cloud Sync with Last-Write-Wins Conflict Resolution
@@ -1093,8 +1124,19 @@ export default function App() {
       <AuthModal
         isOpen={authModalOpen}
         onClose={() => setAuthModalOpen(false)}
-        onLoginSuccess={() => {
+        onLoginSuccess={async () => {
           handleRefreshData();
+          try {
+            const client = getSupabaseClient();
+            if (client) {
+              const { data } = await client.auth.getSession();
+              const uid = data?.session?.user?.id;
+              if (uid) {
+                await syncAllLocalDataToCloud(uid);
+                flushOutboxQueue();
+              }
+            }
+          } catch {}
         }}
       />
     </div>
