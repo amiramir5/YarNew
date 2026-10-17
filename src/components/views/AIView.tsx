@@ -170,15 +170,13 @@ export const AIView: React.FC<AIViewProps> = ({
   const [mistakesError, setMistakesError] = useState('');
 
   // Schedule Generator & Diagnostic Assessment State
-  const [scheduleGoalHours, setScheduleGoalHours] = useState<number>(() => {
-    return settings?.dailyGoalMinutes ? Math.round(settings.dailyGoalMinutes / 60) : 10;
-  });
+  const [scheduleGoalHours, setScheduleGoalHours] = useState<number>(10);
   const [scheduleGradeFocus, setScheduleGradeFocus] = useState('ترکیب دوازدهم و پایه (پیشنهادی)');
   const [scheduleWakeTime, setScheduleWakeTime] = useState('06:00');
-  const [scheduleWeakSubjects, setScheduleWeakSubjects] = useState<string[]>(['زیست', 'شیمی']);
-  const [scheduleSchoolStatus, setScheduleSchoolStatus] = useState('دوازدهم تجربی (مدرسه‌رو - ظهر به بعد در خانه)');
-  const [scheduleTargetExam, setScheduleTargetExam] = useState('کانون فرهنگی آموزش (قلم‌چی) - هدف تراز ۶۵۰۰');
-  const [scheduleCurrentPosition, setScheduleCurrentPosition] = useState('زیست فصل ۳ دوازدهم، مسائل استوکیومتری یازدهم عقب هستم، فیزیک نوسان دارم');
+  const [scheduleWeakSubjects, setScheduleWeakSubjects] = useState<string[]>(['زیست', 'شیمی', 'فیزیک']);
+  const [scheduleSchoolStatus, setScheduleSchoolStatus] = useState('فارغ‌التحصیل و پشت کنکور (تمام‌وقت در خانه)');
+  const [scheduleTargetExam, setScheduleTargetExam] = useState('کنکور سراسری تجربی - هدف رتبه زیر ۵۰۰ (جهش از رتبه ۲۰ هزار)');
+  const [scheduleCurrentPosition, setScheduleCurrentPosition] = useState('سال سوم کنکور؛ مطالعه از صفر؛ ترکیب دوازدهم و دهم (یازدهم هنوز نه)؛ ۳ ساعت زیست ۱۲ + ۱.۵ ساعت زیست ۱۰، ۲ ساعت شیمی ۱۲ + ۱ ساعت شیمی ۱۰، ۲ ساعت فیزیک ۱۲ + ۱ ساعت فیزیک ۱۰ (فردا ریاضی)');
   const [scheduleStudyStyle, setScheduleStudyStyle] = useState('ترکیب تست‌محور سرعتی با مرور خط‌به‌خط قیدهای کتاب درسی');
 
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
