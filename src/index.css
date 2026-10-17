@@ -212,3 +212,63 @@
 .dark ::-webkit-scrollbar-thumb:hover {
   background: rgba(59, 130, 246, 0.65);
 }
+
+/* Poofy Fluffy Puffy Mascot Animations */
+@keyframes poofy-float {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(1.5deg);
+  }
+}
+
+@keyframes poofy-breathe {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04, 0.96);
+  }
+}
+
+@keyframes poofy-blink {
+  0%, 90%, 100% {
+    transform: scaleY(1);
+  }
+  95% {
+    transform: scaleY(0.1);
+  }
+}
+
+@keyframes poofy-wiggle {
+  0%, 100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(-6deg) scale(1.05);
+  }
+  75% {
+    transform: rotate(6deg) scale(1.05);
+  }
+}
+
+.animate-poofy-float {
+  animation: poofy-float 3.5s ease-in-out infinite;
+}
+
+.animate-poofy-breathe {
+  animation: poofy-breathe 4s ease-in-out infinite;
+}
+
+.animate-poofy-blink {
+  animation: poofy-blink 3.8s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.animate-poofy-wiggle {
+  animation: poofy-wiggle 0.6s ease-in-out;
+  transform-origin: center;
+}
+

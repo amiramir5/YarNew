@@ -17,6 +17,7 @@ import { DailyPlan, Exam, MistakeCard, Session, ScheduleProposal, AppSettings, V
 import { studyDayKey, faNum } from '../../lib/jalali';
 import { getSubject } from '../../lib/constants';
 import { generateProactiveSchedule } from '../../lib/ai';
+import { PoofyMascot, PoofyMood } from './PoofyMascot';
 
 interface ProactiveAiBannerProps {
   sessions: Session[];
@@ -224,46 +225,74 @@ export const ProactiveAiBanner: React.FC<ProactiveAiBannerProps> = ({
     }, 1800);
   };
 
-  if (isDismissed || (alerts.length === 0 && !scheduleModalOpen)) {
-    return null;
+  if (isDismissed && !scheduleModalOpen) {
+    return (
+      <div className="flex justify-end">
+        <button
+          onClick={() => setIsDismissed(false)}
+          className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-2xl bg-white dark:bg-[#0c1c33] border border-blue-200 dark:border-blue-900 shadow-xs hover:shadow-md text-xs font-bold text-blue-700 dark:text-blue-300 transition-all cursor-pointer group"
+          title="باز کردن پیام پوفی"
+        >
+          <PoofyMascot mood="idle" size="xs" />
+          <span>مشاوره پوفی</span>
+        </button>
+      </div>
+    );
   }
 
   const primaryAlert = alerts[0];
 
+  const poofyMood: PoofyMood = useMemo(() => {
+    if (!primaryAlert) return 'happy';
+    const t = primaryAlert.title || '';
+    if (t.includes('تک‌درسی') || t.includes('نامتوازن') || t.includes('عقب‌افتادگی') || t.includes('پایه')) return 'worried';
+    if (t.includes('لایتنر') || t.includes('مرور')) return 'curious';
+    return 'talking';
+  }, [primaryAlert]);
+
   return (
     <>
-      <div className="rounded-2xl border border-blue-200 dark:border-blue-900/60 bg-gradient-to-r from-blue-50/90 via-indigo-50/70 to-blue-50/90 dark:from-[#0d1f38] dark:via-[#0c1a2f] dark:to-[#0d1f38] p-4 shadow-xs space-y-3 transition-all animate-in fade-in duration-200 text-right">
+      <div className="rounded-3xl border border-blue-200 dark:border-blue-900/60 bg-gradient-to-r from-blue-50/95 via-indigo-50/80 to-blue-50/95 dark:from-[#0d1f38] dark:via-[#0c1a2f] dark:to-[#0d1f38] p-4.5 shadow-sm space-y-3.5 transition-all animate-in fade-in duration-200 text-right">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
-            <div className="p-2.5 rounded-2xl bg-blue-600 text-white shadow-xs shrink-0 mt-0.5">
-              <Sparkles className="w-4 h-4 animate-spin-slow" />
+          <div className="flex items-center sm:items-start gap-3.5">
+            {/* The Living Poofy Mascot Character */}
+            <div
+              className="shrink-0 flex flex-col items-center cursor-pointer group transition-transform hover:scale-105"
+              onClick={() => onNavigate?.('ai')}
+              title="مشاور هوشمند پوفی - برای گفت‌وگو کلیک کنید"
+            >
+              <PoofyMascot mood={poofyMood} size="lg" />
+              <span className="text-[10px] font-black text-blue-600 dark:text-blue-400 mt-1 px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950/80">
+                پوفی
+              </span>
             </div>
 
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
+            {/* Conversational Comic Balloon from Poofy */}
+            <div className="flex-1 relative p-3.5 rounded-2xl bg-white dark:bg-[#0f2442] border border-blue-100 dark:border-blue-900/50 shadow-xs">
+              <div className="flex items-center gap-2 flex-wrap mb-1">
                 <span className="text-xs font-black text-blue-950 dark:text-blue-100 flex items-center gap-1.5">
-                  <span>مشاور هوشمند کنکوریار</span>
-                  <span className="text-[10px] font-bold px-2 py-0.2 rounded-full bg-blue-200/80 dark:bg-blue-900/80 text-blue-900 dark:text-blue-200">
-                    همراه لحظه‌ای
+                  <span>پیام اختصاصی پوفی</span>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/80 text-blue-900 dark:text-blue-200">
+                    همراه هوشمند کنکور
                   </span>
                 </span>
                 {primaryAlert && (
-                  <span className="text-[10px] font-bold px-2 py-0.2 rounded-md bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60">
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-900/60">
                     {primaryAlert.title}
                   </span>
                 )}
               </div>
 
-              <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 leading-relaxed">
+              <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-medium">
                 {primaryAlert?.message ||
-                  `تا ${settings.examTitle || 'کنکور'} فقط ${faNum(daysToExam)} روز فرصت باقیست. هوش مصنوعی حواسش به تعادل دروس و پایه‌هاست.`}
+                  `سلام قهرمان! تا ${settings.examTitle || 'کنکور'} فقط ${faNum(daysToExam)} روز فرصت داریم. من اینجام تا به تعادل درس‌ها، خواب منظم و مرور به موقع کمکت کنم!`}
               </p>
             </div>
           </div>
 
           <button
             onClick={() => setIsDismissed(true)}
-            className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+            className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800 cursor-pointer shrink-0"
             title="بستن موقت"
           >
             <X className="w-4 h-4" />

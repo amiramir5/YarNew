@@ -1043,6 +1043,7 @@ export default function App() {
               settings={settings}
               plans={plans}
               onSavePlan={handleSavePlan}
+              onUpdateSettings={handleUpdateSettings}
             />
           )}
 

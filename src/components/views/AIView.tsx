@@ -15,6 +15,9 @@ import {
   CalendarCheck,
   Check,
   Camera,
+  Eye,
+  EyeOff,
+  Key,
   Image as ImageIcon,
   Zap,
   RotateCw,
@@ -46,6 +49,7 @@ import {
   FINAL_SUBJECTS,
   getGoftarsForChapter,
 } from '../../lib/constants';
+import { PoofyMascot } from '../common/PoofyMascot';
 import {
   explainTopic,
   generateSlides,
@@ -55,12 +59,14 @@ import {
   PhotoSolveResult,
   extractDocumentText,
   generateProactiveSchedule,
+  isAiKeyConfigured,
 } from '../../lib/ai';
 import { FormattedCoachMessage } from '../FormattedCoachMessage';
 import { Subject3DIcon } from '../common/Subject3DIcon';
 import { LiveCameraModal } from '../common/LiveCameraModal';
-import { loadStudyResources, saveStudyResources, loadSettings, uid } from '../../lib/storage';
+import { loadStudyResources, saveStudyResources, loadSettings, saveSettings, uid } from '../../lib/storage';
 import { studyDayKey, faNum } from '../../lib/jalali';
+import { compressImage } from '../../lib/imageUtils';
 
 interface AIViewProps {
   sessions: Session[];
@@ -70,6 +76,7 @@ interface AIViewProps {
   settings?: AppSettings;
   plans?: DailyPlan[];
   onSavePlan?: (plan: DailyPlan) => void;
+  onUpdateSettings?: (settings: AppSettings) => void;
 }
 
 export const AIView: React.FC<AIViewProps> = ({
@@ -80,8 +87,16 @@ export const AIView: React.FC<AIViewProps> = ({
   settings,
   plans,
   onSavePlan,
+  onUpdateSettings,
 }) => {
   const [activeTab, setActiveTab] = useState<'coach' | 'schedule' | 'photo' | 'resources' | 'slides' | 'explain' | 'mistakes'>('coach');
+
+  // Quick Key Activator State
+  const [isKeyConfigured, setIsKeyConfigured] = useState<boolean>(() => isAiKeyConfigured());
+  const [quickKeyInput, setQuickKeyInput] = useState('');
+  const [quickProvider, setQuickProvider] = useState<'gemini' | 'openrouter'>('gemini');
+  const [quickKeySaveSuccess, setQuickKeySaveSuccess] = useState(false);
+  const [showQuickKey, setShowQuickKey] = useState(false);
 
   // Study Resources State
   const [resources, setResources] = useState<StudyResource[]>(() => loadStudyResources());
@@ -154,13 +169,18 @@ export const AIView: React.FC<AIViewProps> = ({
   const [mistakesResult, setMistakesResult] = useState<MistakesAnalysis | null>(null);
   const [mistakesError, setMistakesError] = useState('');
 
-  // Schedule Generator State
+  // Schedule Generator & Diagnostic Assessment State
   const [scheduleGoalHours, setScheduleGoalHours] = useState<number>(() => {
     return settings?.dailyGoalMinutes ? Math.round(settings.dailyGoalMinutes / 60) : 10;
   });
   const [scheduleGradeFocus, setScheduleGradeFocus] = useState('ترکیب دوازدهم و پایه (پیشنهادی)');
   const [scheduleWakeTime, setScheduleWakeTime] = useState('06:00');
   const [scheduleWeakSubjects, setScheduleWeakSubjects] = useState<string[]>(['زیست', 'شیمی']);
+  const [scheduleSchoolStatus, setScheduleSchoolStatus] = useState('دوازدهم تجربی (مدرسه‌رو - ظهر به بعد در خانه)');
+  const [scheduleTargetExam, setScheduleTargetExam] = useState('کانون فرهنگی آموزش (قلم‌چی) - هدف تراز ۶۵۰۰');
+  const [scheduleCurrentPosition, setScheduleCurrentPosition] = useState('زیست فصل ۳ دوازدهم، مسائل استوکیومتری یازدهم عقب هستم، فیزیک نوسان دارم');
+  const [scheduleStudyStyle, setScheduleStudyStyle] = useState('ترکیب تست‌محور سرعتی با مرور خط‌به‌خط قیدهای کتاب درسی');
+
   const [isScheduleLoading, setIsScheduleLoading] = useState(false);
   const [scheduleResult, setScheduleResult] = useState<ScheduleProposal | null>(null);
   const [scheduleError, setScheduleError] = useState('');
@@ -172,6 +192,25 @@ export const AIView: React.FC<AIViewProps> = ({
     );
   };
 
+  const handleSaveQuickKey = () => {
+    if (!quickKeyInput.trim()) return;
+    const current = loadSettings();
+    const updated: AppSettings = {
+      ...current,
+      ai: {
+        ...current.ai,
+        provider: quickProvider,
+        geminiKey: quickProvider === 'gemini' ? quickKeyInput.trim() : current.ai.geminiKey,
+        openrouterKey: quickProvider === 'openrouter' ? quickKeyInput.trim() : current.ai.openrouterKey,
+      },
+    };
+    saveSettings(updated);
+    onUpdateSettings?.(updated);
+    setIsKeyConfigured(true);
+    setQuickKeySaveSuccess(true);
+    setTimeout(() => setQuickKeySaveSuccess(false), 3000);
+  };
+
   const handleGenerateScheduleTab = async () => {
     setIsScheduleLoading(true);
     setScheduleError('');
@@ -181,9 +220,13 @@ export const AIView: React.FC<AIViewProps> = ({
       const proposal = await generateProactiveSchedule({
         goalMinutes: scheduleGoalHours * 60,
         weakSubjects: scheduleWeakSubjects.length ? scheduleWeakSubjects : ['زیست', 'شیمی'],
-        dayName: 'برنامه روزانه',
+        dayName: 'برنامه اختصاصی شخصی',
         gradeFocus: scheduleGradeFocus,
         wakeTime: scheduleWakeTime,
+        schoolStatus: scheduleSchoolStatus,
+        targetExam: scheduleTargetExam,
+        currentLevelAndPosition: scheduleCurrentPosition,
+        studyStyle: scheduleStudyStyle,
       });
       setScheduleResult(proposal);
     } catch (err: any) {
@@ -194,7 +237,7 @@ export const AIView: React.FC<AIViewProps> = ({
         wake_time: scheduleWakeTime,
         description: 'این برنامه با رعایت ریتم زیستی، پارت‌های ۹۰ دقیقه‌ای و تفکیک مباحث پایه و دوازدهم چیده شده است.',
         blocks: [
-          { time: `${scheduleWakeTime} - 08:00`, subject: 'زیست‌شناسی', topic: 'مطالعه مفهومی گفتار ۱ و ۲ دوازدهم', type: 'study', color: 'blue' },
+          { time: `${scheduleWakeTime} - 08:00`, subject: 'زیست‌شناسی', topic: 'مطالعه مفهومی گفتار ۱ و ۲ دوازدهم + ۴۰ تست', type: 'study', color: 'blue' },
           { time: '08:15 - 09:45', subject: 'شیمی', topic: 'تست‌های زمان‌دار استوکیومتری و محلول‌ها', type: 'test', color: 'purple' },
           { time: '10:00 - 11:30', subject: 'فیزیک', topic: 'حرکت‌شناسی و دینامیک + تحلیل غلط‌ها', type: 'test', color: 'emerald' },
           { time: '12:00 - 13:00', subject: 'عمومی/نهایی', topic: 'امتحان نهایی ادبیات فارسی / زبان انگلیسی', type: 'study', color: 'amber' },
@@ -508,17 +551,93 @@ export const AIView: React.FC<AIViewProps> = ({
 
   return (
     <div className="space-y-6 pb-12 animate-in fade-in duration-200">
-      <div>
-        <h2 className="text-lg font-black text-slate-900 dark:text-white flex items-center gap-2">
-          <span>دستیار هوشمند و مشاور تخصصی کنکور</span>
-          <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60">
-            Powered by Gemini
-          </span>
-        </h2>
-        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-          مشاوره مستقیم، پاسخ‌های کوتاه و کاربردی، تشریح مفهومی مباحث و کشف خطاهای پنهان
-        </p>
+      <div className="flex items-center justify-between p-4.5 rounded-3xl bg-gradient-to-r from-blue-50/95 via-indigo-50/80 to-blue-50/95 dark:from-[#0c1c33] dark:via-[#091526] dark:to-[#0c1c33] border border-blue-200/80 dark:border-blue-900/60 shadow-xs">
+        <div className="flex items-center gap-3.5">
+          <PoofyMascot mood="talking" size="lg" />
+          <div>
+            <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
+              <span>پوفی - دستیار پفکی و مشاور هوشمند کنکور</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60">
+                Gemini & DeepSeek
+              </span>
+            </h2>
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
+              سلام! من پوفی‌ام 🌟 همراهت برای تنظیم جدول برنامه رنگی، پاسخ به تست‌ها و تحلیل دقیق اشتباهات.
+            </p>
+          </div>
+        </div>
       </div>
+
+      {/* Quick AI Key Activator (if no personal key registered) */}
+      {!isKeyConfigured && (
+        <div className="p-4 rounded-3xl bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 dark:from-[#0d1e38] dark:via-[#112444] dark:to-[#0d1e38] border border-blue-200 dark:border-blue-900 shadow-sm space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2.5 rounded-2xl bg-blue-600 text-white shadow-xs">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div>
+                <h4 className="text-xs font-black text-slate-900 dark:text-white">
+                  فعال‌سازی سریع موتور هوش مصنوعی برای پاسخ‌دهی آنی (زیر ۵ ثانیه)
+                </h4>
+                <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed mt-0.5">
+                  برای حل مستقیم تست‌ها و حل عکس بدون معطلی، کلید رایگان Google Gemini را از{' '}
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-bold text-blue-600 dark:text-blue-400 underline"
+                  >
+                    Google AI Studio
+                  </a>{' '}
+                  یا کلید OpenRouter را در کادر زیر وارد کنید:
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
+              اتصال مستقیم
+            </span>
+          </div>
+
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+            <select
+              value={quickProvider}
+              onChange={(e) => setQuickProvider(e.target.value as any)}
+              className="px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
+            >
+              <option value="gemini">Google Gemini (رایگان و سریع)</option>
+              <option value="openrouter">OpenRouter / DeepSeek</option>
+            </select>
+
+            <div className="flex-1 relative">
+              <input
+                type={showQuickKey ? 'text' : 'password'}
+                value={quickKeyInput}
+                onChange={(e) => setQuickKeyInput(e.target.value)}
+                placeholder={quickProvider === 'gemini' ? 'کلید Gemini (AIzaSy...)' : 'کلید OpenRouter (sk-or-v1-...)'}
+                className="w-full px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-800 text-xs font-mono pl-9 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-blue-500"
+                dir="ltr"
+              />
+              <button
+                type="button"
+                onClick={() => setShowQuickKey(!showQuickKey)}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+              >
+                {showQuickKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSaveQuickKey}
+              disabled={!quickKeyInput.trim()}
+              className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black transition-colors disabled:opacity-50 cursor-pointer shrink-0 shadow-xs"
+            >
+              {quickKeySaveSuccess ? 'فعال شد! ✓' : 'ثبت و فعال‌سازی فوری'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Navigation Segmented Controls */}
       <div className="flex items-center gap-1 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-2xl max-w-2xl text-xs font-bold overflow-x-auto scrollbar-none">
@@ -823,6 +942,73 @@ export const AIView: React.FC<AIViewProps> = ({
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Detailed Diagnostic Assessment Section */}
+          <div className="p-4 rounded-2xl bg-blue-50/40 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-900/40 space-y-3.5">
+            <span className="text-xs font-black text-blue-900 dark:text-blue-200 block">
+              ارزیابی اختصاصی مشاور برای شخصی‌سازی دقیق برنامه:
+            </span>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  وضعیت تحصیلی شما
+                </label>
+                <select
+                  value={scheduleSchoolStatus}
+                  onChange={(e) => setScheduleSchoolStatus(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold"
+                >
+                  <option value="دوازدهم تجربی (مدرسه‌رو - ظهر به بعد در خانه)">دوازدهم تجربی (مدرسه‌رو - ظهر به بعد در خانه)</option>
+                  <option value="دوازدهم تجربی (غیرحضوری / مرخصی)">دوازدهم تجربی (غیرحضوری / مطالعه تمام‌وقت)</option>
+                  <option value="فارغ‌التحصیل و پشت کنکور (تمام‌وقت در خانه)">فارغ‌التحصیل و پشت کنکور (تمام‌وقت در خانه)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  آزمون آزمایشی و تراز هدف
+                </label>
+                <input
+                  type="text"
+                  value={scheduleTargetExam}
+                  onChange={(e) => setScheduleTargetExam(e.target.value)}
+                  placeholder="مثلاً: کانون قلم‌چی - تراز ۶۵۰۰"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  الان کجای دروس هستید و چه مباحثی عقبید؟
+                </label>
+                <input
+                  type="text"
+                  value={scheduleCurrentPosition}
+                  onChange={(e) => setScheduleCurrentPosition(e.target.value)}
+                  placeholder="مثلاً: زیست فصل ۳ دوازدهم، شیمی استوکیومتری یازدهم عقبم"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  سبک و مدل مطالعه مورد علاقه
+                </label>
+                <select
+                  value={scheduleStudyStyle}
+                  onChange={(e) => setScheduleStudyStyle(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold"
+                >
+                  <option value="ترکیب تست‌محور سرعتی با مرور خط‌به‌خط قیدهای کتاب درسی">ترکیب تست‌محور سرعتی با مرور خط‌به‌خط قیدهای کتاب درسی</option>
+                  <option value="تست‌محور سنجشی زمان‌دار برای افزایش تراز">تست‌محور سنجشی زمان‌دار برای افزایش تراز</option>
+                  <option value="مفهومی خط‌به‌خط کتاب درسی و حل تشریحی نهایی">مفهومی خط‌به‌خط کتاب درسی و حل تشریحی نهایی</option>
+                </select>
+              </div>
             </div>
           </div>
 
@@ -1214,15 +1400,26 @@ export const AIView: React.FC<AIViewProps> = ({
                       type="file"
                       accept="image/*"
                       className="hidden"
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            setPhotoImage(reader.result as string);
+                          setIsPhotoLoading(true);
+                          setPhotoError('');
+                          try {
+                            const compressed = await compressImage(file, 1280, 0.75);
+                            setPhotoImage(compressed);
                             setPhotoRotation(0);
-                          };
-                          reader.readAsDataURL(file);
+                          } catch (err: any) {
+                            console.error('Image compression error:', err);
+                            const reader = new FileReader();
+                            reader.onload = () => {
+                              setPhotoImage(reader.result as string);
+                              setPhotoRotation(0);
+                            };
+                            reader.readAsDataURL(file);
+                          } finally {
+                            setIsPhotoLoading(false);
+                          }
                         }
                       }}
                     />

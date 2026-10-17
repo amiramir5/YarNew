@@ -31,6 +31,7 @@ import { AppSettings, DailyPlan, Exam, MistakeCard, Session, ViewId } from '../.
 import { CoupleMemberState } from '../../lib/coupleSync';
 import { requestAppWakeLock, releaseAppWakeLock, isAppWakeLockActive } from '../../lib/wakeLock';
 import { ProactiveAiBanner } from '../common/ProactiveAiBanner';
+import { PoofyMascot } from '../common/PoofyMascot';
 
 interface TimerViewProps {
   elapsedSeconds: number;
@@ -623,21 +624,27 @@ export const TimerView: React.FC<TimerViewProps> = ({
               </span>
             )}
 
-            <span
-              className={`text-[10px] mt-1 ${
-                isZenMode
-                  ? isDarkMode
-                    ? 'text-slate-400'
-                    : 'text-slate-500 font-medium'
-                  : 'text-slate-400 dark:text-slate-400'
-              }`}
-            >
-              {isRunning
-                ? 'در حال تمرکز عمیق…'
-                : isPaused
-                ? 'جلسه متوقف شده'
-                : 'آماده شروع مطالعه'}
-            </span>
+            <div className="flex items-center justify-center gap-1.5 mt-1.5">
+              <PoofyMascot
+                mood={isRunning ? 'focus' : isPaused ? 'sleepy' : 'happy'}
+                size="xs"
+              />
+              <span
+                className={`text-[10px] ${
+                  isZenMode
+                    ? isDarkMode
+                      ? 'text-slate-300'
+                      : 'text-slate-600 font-bold'
+                    : 'text-slate-600 dark:text-slate-300 font-bold'
+                }`}
+              >
+                {isRunning
+                  ? 'پوفی همراهته؛ تمرکز عمیق…'
+                  : isPaused
+                  ? 'جلسه متوقف شده'
+                  : 'پوفی آماده شروع پارت'}
+              </span>
+            </div>
           </div>
         </div>
 

@@ -213,6 +213,19 @@ async function callOpenRouterDirect(params: {
 /**
  * Execute AI prompt: prioritizes user personal key, with fallback to backend or client direct
  */
+export function isAiKeyConfigured(): boolean {
+  const settings = loadSettings();
+  const provider = settings.ai.provider || 'gemini';
+  if (provider === 'openrouter') {
+    return !!settings.ai.openrouterKey?.trim();
+  }
+  return !!settings.ai.geminiKey?.trim();
+}
+
+/**
+ * Execute AI prompt: prioritizes user personal key directly for blazing fast response,
+ * with graceful backend proxy fallback.
+ */
 async function executeAiTask(params: {
   apiPath: string;
   backendPayload: any;
@@ -231,9 +244,8 @@ async function executeAiTask(params: {
   const geminiModel = params.preferredModel || settings.ai.geminiModel || 'gemini-2.5-flash';
   const openrouterModel = settings.ai.openrouterModel || 'deepseek/deepseek-chat';
   const baseUrl = getApiBaseUrl();
-  const isGitHubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
 
-  // Case 1: User explicitly configured OpenRouter
+  // Priority 1: User personal OpenRouter Key (Direct client-side, zero proxy latency)
   if (provider === 'openrouter' && openrouterKey) {
     return await callOpenRouterDirect({
       apiKey: openrouterKey,
@@ -245,8 +257,8 @@ async function executeAiTask(params: {
     });
   }
 
-  // Case 2: On GitHub Pages without custom backend server, but user has Gemini key
-  if (isGitHubPages && !baseUrl && geminiKey) {
+  // Priority 2: User personal Gemini Key (Direct client-side, 2-4s response time)
+  if (geminiKey) {
     return await callGeminiDirect({
       apiKey: geminiKey,
       model: geminiModel,
@@ -258,80 +270,50 @@ async function executeAiTask(params: {
     });
   }
 
-  // Case 3: On GitHub Pages without server and without any key
-  if (isGitHubPages && !baseUrl && !geminiKey && !openrouterKey) {
-    throw new Error(
-      'برای استفاده از هوش مصنوعی در هاست گیت‌هاب پیجز، لطفاً کلید رایگان Google Gemini را از Google AI Studio (aistudio.google.com/app/apikey) دریافت کرده و در بخش تنظیمات برنامه وارد فرمایید، یا کلید OpenRouter/DeepSeek را ثبت کنید.'
-    );
-  }
+  // Priority 3: Try backend proxy if available
+  if (baseUrl || (typeof window !== 'undefined' && !window.location.hostname.endsWith('github.io'))) {
+    try {
+      const url = `${baseUrl}${params.apiPath}`;
+      const payload = {
+        ...params.backendPayload,
+        apiKey: undefined,
+        model: geminiModel || undefined,
+      };
 
-  // Case 4: Try backend endpoint first
-  try {
-    const url = `${baseUrl}${params.apiPath}`;
-    const payload = {
-      ...params.backendPayload,
-      apiKey: geminiKey || undefined,
-      model: geminiModel || undefined,
-    };
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 18000);
 
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: await authHeaders(),
-      body: JSON.stringify(payload),
-    });
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: await authHeaders(),
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
 
-    if (res.ok) {
-      const json = await res.json();
-      if (json.ok) {
-        if (typeof json.text === 'string') return json.text;
-        if (json.data) return typeof json.data === 'string' ? json.data : JSON.stringify(json.data);
+      if (res.ok) {
+        const json = await res.json();
+        if (json.ok) {
+          if (typeof json.text === 'string') return json.text;
+          if (json.data) return typeof json.data === 'string' ? json.data : JSON.stringify(json.data);
+        }
+        if (json.error) throw new Error(json.error);
       }
-      if (json.error) throw new Error(json.error);
-    }
 
-    // If backend returns 404 or fails and user has personal key, fallback to direct client!
-    if ((res.status === 404 || res.status >= 500) && geminiKey) {
-      console.warn(`Backend returned ${res.status}, falling back to direct client-side Gemini...`);
-      return await callGeminiDirect({
-        apiKey: geminiKey,
-        model: geminiModel,
-        systemInstruction: params.systemInstruction,
-        prompt: params.userPrompt,
-        inlineData: params.inlineData,
-        temperature: params.temperature,
-        responseMimeType: params.responseMimeType,
-      });
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `خطا در دریافت پاسخ از سرور (${res.status})`);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        throw new Error('پاسخ سرور بیش از حد طول کشید. لطفاً برای پاسخ‌دهی لحظه‌ای و زیر ۵ ثانیه، کلید رایگان Google Gemini را در برنامه وارد فرمایید.');
+      }
+      console.warn('Backend proxy attempt failed, no personal key configured:', err);
     }
-
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(errData.error || `خطا در دریافت پاسخ از سرور (${res.status})`);
-  } catch (err: any) {
-    // If network error occurred and user has personal key, direct fallback
-    if (geminiKey) {
-      console.warn('Network error reaching backend, trying direct Gemini client call:', err);
-      return await callGeminiDirect({
-        apiKey: geminiKey,
-        model: geminiModel,
-        systemInstruction: params.systemInstruction,
-        prompt: params.userPrompt,
-        inlineData: params.inlineData,
-        temperature: params.temperature,
-        responseMimeType: params.responseMimeType,
-      });
-    }
-    if (openrouterKey) {
-      console.warn('Network error reaching backend, trying direct OpenRouter client call:', err);
-      return await callOpenRouterDirect({
-        apiKey: openrouterKey,
-        model: openrouterModel,
-        systemInstruction: params.systemInstruction,
-        prompt: params.userPrompt,
-        temperature: params.temperature,
-        responseMimeType: params.responseMimeType,
-      });
-    }
-    throw err;
   }
+
+  // If we reach here, neither personal key is configured nor backend responded
+  throw new Error(
+    'برای استفاده از هوش مصنوعی و حل سریع تست‌ها، لطفاً کلید رایگان Google Gemini را از Google AI Studio (aistudio.google.com/app/apikey) دریافت کرده و در کادر بالا یا بخش تنظیمات وارد نمایید، یا کلید OpenRouter/DeepSeek را ثبت کنید.'
+  );
 }
 
 const DEFAULT_SYSTEM_INSTRUCTION = `تو طراح ارشد کنکور سراسری تجربی و مشاور رسمی دانشگاه‌های برتر ایران هستی.
@@ -721,35 +703,46 @@ export async function generateProactiveSchedule(params: {
   dayName?: string;
   gradeFocus?: string;
   wakeTime?: string;
+  schoolStatus?: string;
+  targetExam?: string;
+  currentLevelAndPosition?: string;
+  studyStyle?: string;
   model?: string;
 }): Promise<ScheduleProposal> {
-  const userPrompt = `دانش‌آموز کنکور تجربی نیازمند یک جدول برنامه درسی متعادل روزانه است:
-هدف مطالعه: ${params.goalMinutes || 600} دقیقه (${((params.goalMinutes || 600) / 60).toFixed(1)} ساعت)
-دروس نیازمند تقویت: ${(params.weakSubjects || ['زیست', 'شیمی']).join('، ')}
-روز: ${params.dayName || 'فردا'}
-تمرکز پایه: ${params.gradeFocus || 'ترکیبی دهم، یازدهم و دوازدهم'}
-ساعت بیداری پیشنهادی: ${params.wakeTime || '۰۶:۰۰'}
+  const userPrompt = `اطلاعات و ارزیابی تشخیصی داوطلب کنکور سراسری تجربی:
+- ساعت هدف مطالعه روزانه: ${params.goalMinutes || 600} دقیقه (${((params.goalMinutes || 600) / 60).toFixed(1)} ساعت)
+- وضعیت تحصیلی: ${params.schoolStatus || 'دوازدهم تجربی (پوشش مدرسه و کنکور)'}
+- آزمون آزمایشی و تراز هدف: ${params.targetExam || 'کانون فرهنگی آموزش (قلم‌چی)'}
+- موقعیت فعلی در بودجه‌بندی و مباحث: ${params.currentLevelAndPosition || 'مطالعه هم‌گام با بودجه‌بندی نیم‌سال اول'}
+- سبک و شیوه مطالعه: ${params.studyStyle || 'ترکیب مطالعه مفهومی کتاب درسی و حل تست‌های سنجشی زمان‌دار'}
+- دروس نیازمند تقویت و اولویت: ${(params.weakSubjects || ['زیست', 'شیمی']).join('، ')}
+- تمرکز پایه‌ها: ${params.gradeFocus || 'ترکیبی دهم، یازدهم و دوازدهم'}
+- ساعت بیداری: ${params.wakeTime || '۰۶:۰۰'}
+- روز هدف: ${params.dayName || 'برنامه روزانه'}
 
-یک جدول برنامه زمانی رنگی و دقیق با بازه‌های ۷۵ تا ۹۰ دقیقه‌ای به همراه پارت تست‌زنی و مرور شبانه تنظیم کن.
-رنگ‌ها باید از میان این کلاس‌های رنگی باشند: 'blue', 'emerald', 'amber', 'purple', 'rose', 'cyan'.
+دستورالعمل ویژه:
+بر اساس مشخصات دقیق بالا، یک جدول برنامه درسی کاملاً اختصاصی، واقع‌بینانه و منطبق بر ریتم زیستی مغز با پارت‌های ۷۵ تا ۹۰ دقیقه‌ای به همراه پارت‌های استراحت کوتاه، پارت تست‌زنی و مرور شبانه تنظیم کن.
+عناوین مباحث باید دقیقاً از کتب درسی رسمی ایران (پایه‌های دهم، یازدهم و دوازدهم) باشد و تعداد تست پیشنهادی برای هر پارت قید شود.
+رنگ‌ها برای هر بلوک باید منحصراً یکی از این کلاس‌ها باشند: 'blue', 'emerald', 'amber', 'purple', 'rose', 'cyan'.
+
 خروجی منحصراً JSON با ساختار:
 {
-  "title": "برنامه متوازن روزانه کنکوریار",
-  "day": "${params.dayName || 'فردا'}",
+  "title": "برنامه متوازن و شخصی‌سازی‌شده کنکوریار",
+  "day": "${params.dayName || 'برنامه روزانه'}",
   "wake_time": "${params.wakeTime || '06:00'}",
-  "description": "توضیح کوتاه مشاور درباره چیدمان پارت‌ها و رعایت پیش‌نیازها",
+  "description": "تحلیل تخصصی مشاور درباره چیدمان مباحث، نحوه جبران عقب‌افتادگی‌ها و تطبیق با آزمون",
   "blocks": [
     {
       "time": "06:30 - 08:00",
       "subject": "زیست‌شناسی",
-      "topic": "گفتار ۱ فصل ۳ دوازدهم + تست مفهومی",
+      "topic": "گفتار ۱ فصل ۳ دوازدهم + ۴۰ تست آموزشی قلم‌چی",
       "type": "study",
       "color": "blue"
     },
     {
       "time": "08:15 - 09:45",
       "subject": "شیمی",
-      "topic": "مسائل استوکیومتری یازدهم",
+      "topic": "مسائل استوکیومتری یازدهم + ۳۵ تست زمان‌دار",
       "type": "test",
       "color": "purple"
     }
