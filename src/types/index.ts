@@ -122,6 +122,51 @@ export interface QuickNote {
   ts: number;
 }
 
+export interface StudyResource {
+  id: string;
+  name: string;
+  subject: string;
+  grade?: string;
+  chapter?: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  extracted_text?: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface ScheduleTimeBlock {
+  time: string;
+  subject: string;
+  topic: string;
+  type: 'study' | 'test' | 'review';
+  color: string;
+}
+
+export interface ScheduleProposal {
+  title: string;
+  day: string;
+  wake_time: string;
+  description: string;
+  blocks: ScheduleTimeBlock[];
+}
+
+export interface ProactiveAdvice {
+  id: string;
+  type: 'balance' | 'grade_warning' | 'study_volume' | 'leitner_due' | 'encouragement' | 'exam_prep';
+  title: string;
+  message: string;
+  severity: 'info' | 'warning' | 'alert' | 'success';
+  suggestedAction?: {
+    type: 'open_plan' | 'view_leitner' | 'start_timer' | 'create_schedule';
+    label: string;
+    payload?: any;
+  };
+  scheduleProposal?: ScheduleProposal;
+  created_at: number;
+}
+
 export interface AppSettings {
   theme: 'light' | 'dark';
   examDate: string; // YYYY-MM-DD
@@ -135,6 +180,10 @@ export interface AppSettings {
     geminiKey: string;
     geminiModel: string;
     coachPlanGoal?: string;
+    provider?: 'gemini' | 'openrouter';
+    openrouterKey?: string;
+    openrouterModel?: string;
+    proactiveEnabled?: boolean;
   };
   partnerLinkBackup?: {
     partner_id: string;

@@ -75,6 +75,7 @@ import { BottomNav } from './components/BottomNav';
 import { CommandPalette } from './components/CommandPalette';
 import { InstallPwaBanner } from './components/common/InstallPwaBanner';
 import { AuthModal } from './components/common/AuthModal';
+import { ProactiveFloatingWidget } from './components/common/ProactiveFloatingWidget';
 
 // Views
 import { HomeView } from './components/views/HomeView';
@@ -913,6 +914,7 @@ export default function App() {
               sessions={sessions}
               exams={exams}
               mistakes={mistakes}
+              plans={plans}
               settings={settings}
               streak={streak}
               liveTimerSeconds={elapsedSeconds}
@@ -925,6 +927,7 @@ export default function App() {
                 setDatePickerTarget('exam');
                 setDatePickerOpen(true);
               }}
+              onSavePlan={handleSavePlan}
             />
           )}
 
@@ -941,6 +944,10 @@ export default function App() {
               vibrationEnabled={settings.vibrationEnabled}
               theme={settings.theme}
               sessions={sessions}
+              mistakes={mistakes}
+              plans={plans}
+              exams={exams}
+              settings={settings}
               partnerState={partnerLiveState}
               onNavigate={setActiveView}
               onSelectSubject={setActiveSubject}
@@ -953,6 +960,7 @@ export default function App() {
               onReset={handleResetTimer}
               onFinish={handleFinishTimer}
               onOpenManualModal={() => setManualSessionOpen(true)}
+              onSavePlan={handleSavePlan}
             />
           )}
 
@@ -1032,6 +1040,9 @@ export default function App() {
               mistakes={mistakes}
               progressList={progressList}
               soundEnabled={settings.soundEnabled}
+              settings={settings}
+              plans={plans}
+              onSavePlan={handleSavePlan}
             />
           )}
 
@@ -1062,6 +1073,18 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {/* Omnipresent Proactive AI Counselor Widget */}
+      {settings.ai.proactiveEnabled !== false && activeView !== 'ai' && (
+        <ProactiveFloatingWidget
+          sessions={sessions}
+          mistakes={mistakes}
+          settings={settings}
+          isTimerRunning={isTimerRunning}
+          activeSubject={activeSubject}
+          onNavigate={setActiveView}
+        />
+      )}
 
       {/* Mobile Bottom Bar */}
       <BottomNav

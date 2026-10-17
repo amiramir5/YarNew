@@ -58,8 +58,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [goalTests, setGoalTests] = useState(settings.dailyGoalTests);
 
   // AI settings
+  const [aiProvider, setAiProvider] = useState<'gemini' | 'openrouter'>(settings.ai.provider || 'gemini');
   const [geminiKey, setGeminiKey] = useState(settings.ai.geminiKey);
   const [geminiModel, setGeminiModel] = useState(settings.ai.geminiModel);
+  const [openrouterKey, setOpenrouterKey] = useState(settings.ai.openrouterKey || '');
+  const [openrouterModel, setOpenrouterModel] = useState(settings.ai.openrouterModel || 'deepseek/deepseek-chat');
+  const [showOpenrouterKey, setShowOpenrouterKey] = useState(false);
+  const [proactiveEnabled, setProactiveEnabled] = useState(settings.ai.proactiveEnabled !== false);
 
   // Supabase configuration state
   const initialSb = getSupabaseConfig();
@@ -97,8 +102,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       dailyGoalTests: goalTests,
       ai: {
         ...settings.ai,
+        provider: aiProvider,
         geminiKey: geminiKey.trim(),
         geminiModel,
+        openrouterKey: openrouterKey.trim(),
+        openrouterModel,
+        proactiveEnabled,
       },
     };
     onUpdateSettings(updatedSettings);
@@ -115,7 +124,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const handleTestAi = async () => {
     setIsTesting(true);
     setTestResult(null);
-    const res = await testAiConnection(geminiKey, geminiModel);
+    const res =
+      aiProvider === 'openrouter'
+        ? await testAiConnection('openrouter', openrouterKey, openrouterModel)
+        : await testAiConnection('gemini', geminiKey, geminiModel);
     setTestResult(res);
     setIsTesting(false);
   };
@@ -243,77 +255,184 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
         {/* AI Engine Configuration */}
         <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 p-5 shadow-xs space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-              تنظیمات موتور هوش مصنوعی (Google Gemini Flash)
-            </h3>
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
+                موتور هوش مصنوعی و مشاور همراه (Gemini / DeepSeek)
+              </h3>
+            </div>
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200">
+              Dual-Engine AI
+            </span>
           </div>
 
           <div className="space-y-4">
+            {/* Provider Switcher */}
             <div>
-              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
-                نسخه مدل Gemini (منحصراً فلش)
+              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1.5 text-xs">
+                انتخاب سرویس‌دهنده هوش مصنوعی
               </label>
-              <select
-                value={geminiModel}
-                onChange={(e) => setGeminiModel(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium"
-              >
-                <option value="gemini-3.5-flash">gemini-3.5-flash (پیشنهادی)</option>
-                <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-                <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-              </select>
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
-                  کلید اختصاصی Google Gemini API Key
-                </label>
-                <a
-                  href="https://aistudio.google.com/app/apikey"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
-                >
-                  دریافت رایگان کلید از Google AI Studio
-                </a>
-              </div>
-              <div className="relative">
-                <input
-                  type={showGeminiKey ? 'text' : 'password'}
-                  value={geminiKey}
-                  onChange={(e) => setGeminiKey(e.target.value)}
-                  placeholder="کلید Gemini را اینجا وارد کنید (مثلاً AIzaSy...)"
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-blue-500"
-                  dir="ltr"
-                />
+              <div className="grid grid-cols-2 gap-2 text-xs">
                 <button
                   type="button"
-                  onClick={() => setShowGeminiKey(!showGeminiKey)}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                  title={showGeminiKey ? 'مخفی‌سازی' : 'نمایش کلید'}
+                  onClick={() => setAiProvider('gemini')}
+                  className={`py-2.5 rounded-xl font-bold transition-all cursor-pointer border ${
+                    aiProvider === 'gemini'
+                      ? 'bg-blue-50 dark:bg-blue-950/70 border-blue-500 text-blue-700 dark:text-blue-300 shadow-xs'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100'
+                  }`}
                 >
-                  {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  Google Gemini (فلش پرسرعت)
                 </button>
-              </div>
-              <div className="p-3 rounded-xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-200/60 dark:border-blue-900/50 flex items-start gap-2 text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-                <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0 mt-0.5" />
-                <span>
-                  این کلید تنها در دستگاه شما ذخیره می‌شود و <strong>در کدهای گیت‌هاب قرار نخواهد گرفت</strong> تا خطای امنیتی Push Protection ایجاد نشود. در صورت عدم ثبت کلید شخصی، از کلید سرور استفاده خواهد شد.
-                </span>
+
+                <button
+                  type="button"
+                  onClick={() => setAiProvider('openrouter')}
+                  className={`py-2.5 rounded-xl font-bold transition-all cursor-pointer border ${
+                    aiProvider === 'openrouter'
+                      ? 'bg-purple-50 dark:bg-purple-950/70 border-purple-500 text-purple-700 dark:text-purple-300 shadow-xs'
+                      : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100'
+                  }`}
+                >
+                  OpenRouter / DeepSeek
+                </button>
               </div>
             </div>
 
-            <div className="flex items-center gap-3 pt-1">
+            {/* Provider 1: Gemini */}
+            {aiProvider === 'gemini' && (
+              <div className="space-y-3.5 animate-in fade-in">
+                <div>
+                  <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1 text-xs">
+                    نسخه مدل Gemini
+                  </label>
+                  <select
+                    value={geminiModel}
+                    onChange={(e) => setGeminiModel(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium text-xs"
+                  >
+                    <option value="gemini-3.5-flash">gemini-3.5-flash (پیشنهادی و پرسرعت)</option>
+                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
+                      کلید اختصاصی Google Gemini API Key
+                    </label>
+                    <a
+                      href="https://aistudio.google.com/app/apikey"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      دریافت رایگان کلید از Google AI Studio
+                    </a>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showGeminiKey ? 'text' : 'password'}
+                      value={geminiKey}
+                      onChange={(e) => setGeminiKey(e.target.value)}
+                      placeholder="کلید Gemini را اینجا وارد کنید (مثلاً AIzaSy...)"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-blue-500"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowGeminiKey(!showGeminiKey)}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                      title={showGeminiKey ? 'مخفی‌سازی' : 'نمایش کلید'}
+                    >
+                      {showGeminiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Provider 2: OpenRouter / DeepSeek */}
+            {aiProvider === 'openrouter' && (
+              <div className="space-y-3.5 animate-in fade-in">
+                <div>
+                  <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1 text-xs">
+                    مدل OpenRouter
+                  </label>
+                  <select
+                    value={openrouterModel}
+                    onChange={(e) => setOpenrouterModel(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium text-xs font-mono"
+                    dir="ltr"
+                  >
+                    <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (V3 - فوق‌العاده قوی)</option>
+                    <option value="deepseek/deepseek-r1">deepseek/deepseek-r1 (استدلال عمیق تستی)</option>
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
+                      کلید دسترسی OpenRouter API Key
+                    </label>
+                    <a
+                      href="https://openrouter.ai/keys"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[11px] font-bold text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      دریافت کلید از OpenRouter
+                    </a>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showOpenrouterKey ? 'text' : 'password'}
+                      value={openrouterKey}
+                      onChange={(e) => setOpenrouterKey(e.target.value)}
+                      placeholder="sk-or-v1-..."
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-purple-500"
+                      dir="ltr"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowOpenrouterKey(!showOpenrouterKey)}
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                    >
+                      {showOpenrouterKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    با وارد کردن کلید OpenRouter، کلیه پاسخ‌ها توسط مدل‌های پیشرفته <b>DeepSeek</b> یا Gemini بدون نیاز به سرور واسط مستقیماً اجرا می‌شوند.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {/* Proactive Counselor Checkbox */}
+            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+              <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-800 dark:text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={proactiveEnabled}
+                  onChange={(e) => setProactiveEnabled(e.target.checked)}
+                  className="rounded-md text-blue-600 focus:ring-blue-500"
+                />
+                <span>فعال‌سازی مشاور هوشمند پیش‌فعال (هشدار تعادل دروس، یادآوری پایه‌ها و پیشنهاد برنامه)</span>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3 pt-2">
               <button
                 type="button"
                 onClick={handleTestAi}
                 disabled={isTesting}
-                className="px-4 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                className="px-4 py-2 rounded-xl bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/40 dark:hover:bg-blue-900 text-blue-700 dark:text-blue-300 font-bold border border-blue-200 dark:border-blue-800 transition-colors flex items-center gap-1.5 cursor-pointer disabled:opacity-50 text-xs"
               >
-                {isTesting ? 'در حال تست اتصال…' : 'تست اتصال هوش مصنوعی'}
+                {isTesting ? 'در حال تست اتصال…' : `تست اتصال ${aiProvider === 'openrouter' ? 'OpenRouter' : 'Gemini'}`}
               </button>
 
               {testResult && (

@@ -853,6 +853,112 @@ app.post('/api/ai/extract-doc', async (req: Request, res: Response) => {
   }
 });
 
+// AI API: Proactive Schedule Generator
+app.post('/api/ai/proactive-schedule', async (req: Request, res: Response) => {
+  try {
+    const { goalMinutes, weakSubjects, dayName, gradeFocus, wakeTime, apiKey, model } = req.body;
+    const ai = getGeminiClient(apiKey);
+
+    const userPrompt = `دانش‌آموز کنکور تجربی نیازمند یک جدول برنامه درسی متعادل روزانه است:
+هدف مطالعه: ${goalMinutes || 600} دقیقه (${((goalMinutes || 600) / 60).toFixed(1)} ساعت)
+دروس نیازمند تقویت: ${(weakSubjects || ['زیست', 'شیمی']).join('، ')}
+روز: ${dayName || 'فردا'}
+تمرکز پایه: ${gradeFocus || 'ترکیبی دهم، یازدهم و دوازدهم'}
+ساعت بیداری پیشنهادی: ${wakeTime || '۰۶:۰۰'}
+
+یک جدول برنامه زمانی رنگی و دقیق با بازه‌های ۷۵ تا ۹۰ دقیقه‌ای به همراه پارت تست‌زنی و مرور شبانه تنظیم کن.
+رنگ‌ها باید از میان این کلاس‌های رنگی باشند: 'blue', 'emerald', 'amber', 'purple', 'rose', 'cyan'.
+خروجی منحصراً JSON با ساختار:
+{
+  "title": "برنامه متوازن روزانه کنکوریار",
+  "day": "${dayName || 'فردا'}",
+  "wake_time": "${wakeTime || '06:00'}",
+  "description": "توضیح کوتاه مشاور درباره چیدمان پارت‌ها و رعایت پیش‌نیازها",
+  "blocks": [
+    {
+      "time": "06:30 - 08:00",
+      "subject": "زیست‌شناسی",
+      "topic": "گفتار ۱ فصل ۳ دوازدهم + تست مفهومی",
+      "type": "study",
+      "color": "blue"
+    },
+    {
+      "time": "08:15 - 09:45",
+      "subject": "شیمی",
+      "topic": "مسائل استوکیومتری یازدهم",
+      "type": "test",
+      "color": "purple"
+    }
+  ]
+}`;
+
+    const response = await generateWithFallback(ai, {
+      contents: userPrompt,
+      config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      },
+    }, model);
+
+    const parsed = parseModelJson(response.text || '');
+    return res.json({ ok: true, data: parsed });
+  } catch (err: any) {
+    console.error('Proactive schedule error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
+  }
+});
+
+// AI API: Proactive Advices Generator
+app.post('/api/ai/proactive-advices', async (req: Request, res: Response) => {
+  try {
+    const { todayMinutes, goalMinutes, subjectMinutes, dueLeitnerCount, daysToExam, examTitle, streak, apiKey, model } = req.body;
+    const ai = getGeminiClient(apiKey);
+
+    const userPrompt = `اطلاعات لحظه‌ای دانش‌آموز:
+- ساعت مطالعه امروز: ${Math.round(todayMinutes || 0)} دقیقه از هدف ${goalMinutes || 600} دقیقه
+- تفکیک مطالعه دروس امروز: ${JSON.stringify(subjectMinutes || {})}
+- کارت‌های لایتنر مانده برای مرور امروز: ${dueLeitnerCount || 0} کارت
+- روزهای باقیمانده تا ${examTitle || 'کنکور'}: ${daysToExam || 0} روز
+- زنجیره تداوم: ${streak || 0} روز
+
+با هوش و دلسوزی موقعیت را ارزیابی کن و بین ۱ تا ۳ توصیه مشاوره‌ای پیش‌فعال و فوری تولید کن.
+خروجی منحصراً JSON به این ساختار:
+{
+  "advices": [
+    {
+      "id": "adv_1",
+      "type": "balance",
+      "title": "عنوان هشدار یا توصیه",
+      "message": "متن صمیمی و انگیزه‌بخش مشاور برای اصلاح وضعیت",
+      "severity": "warning",
+      "suggestedAction": {
+        "type": "create_schedule",
+        "label": "تنظیم برنامه متوازن پیشنهادی"
+      }
+    }
+  ]
+}`;
+
+    const response = await generateWithFallback(ai, {
+      contents: userPrompt,
+      config: {
+        systemInstruction: DEFAULT_SYSTEM_INSTRUCTION,
+        temperature: 0.3,
+        responseMimeType: 'application/json',
+      },
+    }, model);
+
+    const parsed = parseModelJson(response.text || '');
+    return res.json({ ok: true, data: parsed });
+  } catch (err: any) {
+    console.error('Proactive advices error:', err);
+    const { status, error } = formatAiError(err);
+    return res.status(status).json({ ok: false, error });
+  }
+});
+
 // Mount Vite in dev or static files in production
 async function startServer() {
   if (process.env.NODE_ENV === 'production') {

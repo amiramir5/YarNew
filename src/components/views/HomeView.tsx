@@ -17,7 +17,7 @@ import {
   Archive,
   History,
 } from 'lucide-react';
-import { AppSettings, Exam, MistakeCard, Session, ViewId } from '../../types';
+import { AppSettings, DailyPlan, Exam, MistakeCard, Session, ViewId } from '../../types';
 import {
   calcDaysLeft,
   calcKonkoorPercent,
@@ -35,11 +35,13 @@ import {
 import { getSubject } from '../../lib/constants';
 import { Subject3DIcon } from '../common/Subject3DIcon';
 import { getStoredPartnerState, getCoupleSettings, CoupleMemberState } from '../../lib/coupleSync';
+import { ProactiveAiBanner } from '../common/ProactiveAiBanner';
 
 interface HomeViewProps {
   sessions: Session[];
   exams?: Exam[];
   mistakes?: MistakeCard[];
+  plans?: DailyPlan[];
   settings: AppSettings;
   streak?: number;
   liveTimerSeconds: number;
@@ -49,21 +51,24 @@ interface HomeViewProps {
   onNavigate: (view: ViewId) => void;
   onEditExamDate: () => void;
   onOpenQuickSessionModal: () => void;
+  onSavePlan?: (plan: DailyPlan) => void;
 }
 
 export const HomeView: React.FC<HomeViewProps> = ({
   sessions,
   exams = [],
   mistakes = [],
+  plans = [],
   settings,
   streak: propStreak,
   liveTimerSeconds,
   isTimerRunning,
-  activeTimerSubject,
+  activeTimerSubject = 'bio',
   partnerState: propPartnerState,
   onNavigate,
   onEditExamDate,
   onOpenQuickSessionModal,
+  onSavePlan = () => {},
 }) => {
   const [showPastArchive, setShowPastArchive] = useState(false);
   const today = studyDayKey();
@@ -250,6 +255,19 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Proactive AI Counselor Banner */}
+      {settings.ai.proactiveEnabled !== false && (
+        <ProactiveAiBanner
+          sessions={sessions}
+          exams={exams}
+          mistakes={mistakes}
+          plans={plans}
+          settings={settings}
+          onSavePlan={onSavePlan}
+          onNavigate={onNavigate}
+        />
+      )}
 
       {/* Goal Progress Bar */}
       <div className="neu-card p-5 space-y-3">

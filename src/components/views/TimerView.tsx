@@ -27,9 +27,10 @@ import { fmtClock, faNum } from '../../lib/jalali';
 import { playSound, triggerHaptic } from '../../lib/audio';
 import { Subject3DIcon } from '../common/Subject3DIcon';
 import { StudyDistributionPieChart } from '../common/StudyDistributionPieChart';
-import { Session, ViewId } from '../../types';
+import { AppSettings, DailyPlan, Exam, MistakeCard, Session, ViewId } from '../../types';
 import { CoupleMemberState } from '../../lib/coupleSync';
 import { requestAppWakeLock, releaseAppWakeLock, isAppWakeLockActive } from '../../lib/wakeLock';
+import { ProactiveAiBanner } from '../common/ProactiveAiBanner';
 
 interface TimerViewProps {
   elapsedSeconds: number;
@@ -43,6 +44,10 @@ interface TimerViewProps {
   vibrationEnabled: boolean;
   theme?: 'light' | 'dark';
   sessions?: Session[];
+  mistakes?: MistakeCard[];
+  plans?: DailyPlan[];
+  exams?: Exam[];
+  settings?: AppSettings;
   partnerState?: CoupleMemberState;
   onNavigate?: (view: ViewId) => void;
   onSelectSubject: (subjId: string) => void;
@@ -55,6 +60,7 @@ interface TimerViewProps {
   onReset: () => void;
   onFinish: () => void;
   onOpenManualModal: () => void;
+  onSavePlan?: (plan: DailyPlan) => void;
 }
 
 export const TimerView: React.FC<TimerViewProps> = ({
@@ -69,6 +75,10 @@ export const TimerView: React.FC<TimerViewProps> = ({
   vibrationEnabled,
   theme,
   sessions = [],
+  mistakes = [],
+  plans = [],
+  exams = [],
+  settings,
   partnerState,
   onNavigate,
   onSelectSubject,
@@ -81,6 +91,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
   onReset,
   onFinish,
   onOpenManualModal,
+  onSavePlan = () => {},
 }) => {
   const [isZenMode, setIsZenMode] = useState(false);
   const isDarkMode =
@@ -309,6 +320,19 @@ export const TimerView: React.FC<TimerViewProps> = ({
             </button>
           )}
         </div>
+      )}
+
+      {/* Proactive Counselor Banner in Timer */}
+      {!isZenMode && settings && settings.ai.proactiveEnabled !== false && (
+        <ProactiveAiBanner
+          sessions={sessions}
+          exams={exams}
+          mistakes={mistakes}
+          plans={plans}
+          settings={settings}
+          onSavePlan={onSavePlan}
+          onNavigate={onNavigate}
+        />
       )}
 
       {/* Subject Selector Bar with Tabs (hidden in Zen Mode) */}

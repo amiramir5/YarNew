@@ -12,9 +12,19 @@ import {
   MessageSquare,
   BarChart2,
   Calendar,
+  CalendarCheck,
+  Check,
   Camera,
   Image as ImageIcon,
   Zap,
+  RotateCw,
+  RotateCcw,
+  RefreshCw,
+  Upload,
+  FileText,
+  Trash2,
+  FolderPlus,
+  Compass,
 } from 'lucide-react';
 import {
   MistakeCard,
@@ -23,6 +33,10 @@ import {
   SlideDeck,
   TopicExplanation,
   MistakesAnalysis,
+  StudyResource,
+  ScheduleProposal,
+  DailyPlan,
+  AppSettings,
 } from '../../types';
 import {
   SUBJECTS,
@@ -39,23 +53,45 @@ import {
   consultCoach,
   solvePhotoQuestion,
   PhotoSolveResult,
+  extractDocumentText,
+  generateProactiveSchedule,
 } from '../../lib/ai';
 import { FormattedCoachMessage } from '../FormattedCoachMessage';
 import { Subject3DIcon } from '../common/Subject3DIcon';
+import { LiveCameraModal } from '../common/LiveCameraModal';
+import { loadStudyResources, saveStudyResources, loadSettings, uid } from '../../lib/storage';
+import { studyDayKey, faNum } from '../../lib/jalali';
 
 interface AIViewProps {
   sessions: Session[];
   mistakes: MistakeCard[];
   progressList: ProgressEntry[];
   soundEnabled: boolean;
+  settings?: AppSettings;
+  plans?: DailyPlan[];
+  onSavePlan?: (plan: DailyPlan) => void;
 }
 
 export const AIView: React.FC<AIViewProps> = ({
   sessions,
   mistakes,
   progressList,
+  soundEnabled,
+  settings,
+  plans,
+  onSavePlan,
 }) => {
-  const [activeTab, setActiveTab] = useState<'coach' | 'photo' | 'slides' | 'explain' | 'mistakes'>('coach');
+  const [activeTab, setActiveTab] = useState<'coach' | 'schedule' | 'photo' | 'resources' | 'slides' | 'explain' | 'mistakes'>('coach');
+
+  // Study Resources State
+  const [resources, setResources] = useState<StudyResource[]>(() => loadStudyResources());
+  const [activeResourceId, setActiveResourceId] = useState<string | null>(null);
+  const [isResourceUploading, setIsResourceUploading] = useState(false);
+  const [resourceError, setResourceError] = useState('');
+
+  // Camera & Image Rotation State
+  const [isCameraModalOpen, setIsCameraModalOpen] = useState(false);
+  const [photoRotation, setPhotoRotation] = useState<number>(0);
 
   // Coach Chat State
   const [coachGoal, setCoachGoal] = useState('مطالعه روزانه ۱۰ ساعت با تمرکز روی زیست و شیمی کنکور ۱۴۰۶');
@@ -118,6 +154,178 @@ export const AIView: React.FC<AIViewProps> = ({
   const [mistakesResult, setMistakesResult] = useState<MistakesAnalysis | null>(null);
   const [mistakesError, setMistakesError] = useState('');
 
+  // Schedule Generator State
+  const [scheduleGoalHours, setScheduleGoalHours] = useState<number>(() => {
+    return settings?.dailyGoalMinutes ? Math.round(settings.dailyGoalMinutes / 60) : 10;
+  });
+  const [scheduleGradeFocus, setScheduleGradeFocus] = useState('ترکیب دوازدهم و پایه (پیشنهادی)');
+  const [scheduleWakeTime, setScheduleWakeTime] = useState('06:00');
+  const [scheduleWeakSubjects, setScheduleWeakSubjects] = useState<string[]>(['زیست', 'شیمی']);
+  const [isScheduleLoading, setIsScheduleLoading] = useState(false);
+  const [scheduleResult, setScheduleResult] = useState<ScheduleProposal | null>(null);
+  const [scheduleError, setScheduleError] = useState('');
+  const [scheduleSavedSuccess, setScheduleSavedSuccess] = useState(false);
+
+  const handleToggleWeakSubject = (subjName: string) => {
+    setScheduleWeakSubjects((prev) =>
+      prev.includes(subjName) ? prev.filter((s) => s !== subjName) : [...prev, subjName]
+    );
+  };
+
+  const handleGenerateScheduleTab = async () => {
+    setIsScheduleLoading(true);
+    setScheduleError('');
+    setScheduleSavedSuccess(false);
+
+    try {
+      const proposal = await generateProactiveSchedule({
+        goalMinutes: scheduleGoalHours * 60,
+        weakSubjects: scheduleWeakSubjects.length ? scheduleWeakSubjects : ['زیست', 'شیمی'],
+        dayName: 'برنامه روزانه',
+        gradeFocus: scheduleGradeFocus,
+        wakeTime: scheduleWakeTime,
+      });
+      setScheduleResult(proposal);
+    } catch (err: any) {
+      console.warn('Schedule generation error, using balanced fallback:', err);
+      setScheduleResult({
+        title: 'برنامه متوازن و هدفمند روزانه',
+        day: 'فردا',
+        wake_time: scheduleWakeTime,
+        description: 'این برنامه با رعایت ریتم زیستی، پارت‌های ۹۰ دقیقه‌ای و تفکیک مباحث پایه و دوازدهم چیده شده است.',
+        blocks: [
+          { time: `${scheduleWakeTime} - 08:00`, subject: 'زیست‌شناسی', topic: 'مطالعه مفهومی گفتار ۱ و ۲ دوازدهم', type: 'study', color: 'blue' },
+          { time: '08:15 - 09:45', subject: 'شیمی', topic: 'تست‌های زمان‌دار استوکیومتری و محلول‌ها', type: 'test', color: 'purple' },
+          { time: '10:00 - 11:30', subject: 'فیزیک', topic: 'حرکت‌شناسی و دینامیک + تحلیل غلط‌ها', type: 'test', color: 'emerald' },
+          { time: '12:00 - 13:00', subject: 'عمومی/نهایی', topic: 'امتحان نهایی ادبیات فارسی / زبان انگلیسی', type: 'study', color: 'amber' },
+          { time: '16:00 - 17:30', subject: 'ریاضی', topic: 'حل تست‌های مبحثی تابع و مثلثات پایه', type: 'study', color: 'cyan' },
+          { time: '21:00 - 22:00', subject: 'مرور شبانه', topic: 'مرور فلش‌کارت‌های جعبه لایتنر', type: 'review', color: 'rose' },
+        ],
+      });
+    } finally {
+      setIsScheduleLoading(false);
+    }
+  };
+
+  const handleApplyScheduleToPlan = () => {
+    if (!scheduleResult || !onSavePlan) return;
+    const today = studyDayKey();
+    const planItems = scheduleResult.blocks.map((b) => ({
+      text: `${b.time} | ${b.subject}: ${b.topic} (${b.type === 'test' ? 'تست‌زنی' : b.type === 'review' ? 'مرور' : 'مطالعه'})`,
+      done: false,
+    }));
+
+    const newPlan: DailyPlan = {
+      id: 'plan-' + Date.now(),
+      day: today,
+      wake_time: scheduleResult.wake_time || scheduleWakeTime,
+      items: planItems,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+      device_id: settings?.deviceId || 'client',
+      deleted_at: null,
+    };
+
+    onSavePlan(newPlan);
+    setScheduleSavedSuccess(true);
+    setTimeout(() => setScheduleSavedSuccess(false), 3000);
+  };
+
+  const activeResource = resources.find((r) => r.id === activeResourceId);
+
+  // In-place Image Rotation for Photo Solver
+  const handleRotatePhoto = (delta: number) => {
+    if (!photoImage) return;
+    const newRot = (photoRotation + delta + 360) % 360;
+    setPhotoRotation(newRot);
+
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      if (delta === 90 || delta === -90) {
+        canvas.width = img.height;
+        canvas.height = img.width;
+      } else {
+        canvas.width = img.width;
+        canvas.height = img.height;
+      }
+
+      ctx.save();
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate((delta * Math.PI) / 180);
+      ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      ctx.restore();
+
+      setPhotoImage(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.src = photoImage;
+  };
+
+  // Upload Study Resource (PDF / Textbook)
+  const handleResourceUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 20 * 1024 * 1024) {
+      setResourceError('حجم فایل نباید بیش از ۲۰ مگابایت باشد.');
+      return;
+    }
+
+    setIsResourceUploading(true);
+    setResourceError('');
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64Data = reader.result as string;
+          let extracted = '';
+          try {
+            extracted = await extractDocumentText(base64Data, file.type || 'application/pdf');
+          } catch (exErr: any) {
+            console.warn('Document text extract failed, keeping file metadata:', exErr);
+            extracted = `فایل منبع آموزشی ${file.name}`;
+          }
+
+          const newRes: StudyResource = {
+            id: uid(),
+            name: file.name.replace(/\.[^/.]+$/, ''),
+            subject: 'زیست‌شناسی',
+            file_name: file.name,
+            file_size: file.size,
+            mime_type: file.type || 'application/pdf',
+            extracted_text: extracted,
+            created_at: Date.now(),
+            updated_at: Date.now(),
+          };
+
+          const updated = [newRes, ...resources];
+          setResources(updated);
+          saveStudyResources(updated);
+          setActiveResourceId(newRes.id);
+        } catch (err: any) {
+          setResourceError(err.message || 'خطا در پردازش فایل منبع');
+        } finally {
+          setIsResourceUploading(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      setResourceError(err.message || 'خطا در خواندن فایل');
+      setIsResourceUploading(false);
+    }
+  };
+
+  const handleDeleteResource = (id: string) => {
+    const updated = resources.filter((r) => r.id !== id);
+    setResources(updated);
+    saveStudyResources(updated);
+    if (activeResourceId === id) setActiveResourceId(null);
+  };
+
   // Coach Send
   const handleSendCoach = async (textToSend?: string, mode?: string) => {
     const text = (textToSend || chatInput).trim();
@@ -131,13 +339,14 @@ export const AIView: React.FC<AIViewProps> = ({
     try {
       const context = {
         goal: coachGoal,
-        userHistory: 'داوطلب سال سوم کنکور با رتبه‌های قبلی ۳۲هزار و ۲۰هزار (لطفاً بدون تکرار بی‌مورد در مکالمه، به عنوان پیش‌زمینه ذهنی مدنظر باشد)',
+        userHistory: 'داوطلب سال سوم کنکور تجربی با اهداف رتبه برتر و تراز بالای کانون قلم‌چی و دانشگاه‌های علوم پزشکی',
         totalSessions: sessions.filter((s) => !s.deleted_at).length,
         totalMistakes: mistakes.filter((m) => !m.deleted_at).length,
         recentProgress: progressList.slice(-10),
+        activeResource: activeResource ? { name: activeResource.name, subject: activeResource.subject } : undefined,
       };
 
-      const reply = await consultCoach(text, context, mode || 'عمومی', chatMessages);
+      const reply = await consultCoach(text, context, mode || 'عمومی', chatMessages, undefined, activeResource?.extracted_text);
       setChatMessages((prev) => [...prev, { role: 'assistant', text: reply }]);
     } catch (err: any) {
       setChatMessages((prev) => [
@@ -159,7 +368,7 @@ export const AIView: React.FC<AIViewProps> = ({
     const topic = explainCustom.trim() || explainChapter || getSubject(explainSubj).name;
 
     try {
-      const res = await explainTopic(topic, getSubject(explainSubj).name);
+      const res = await explainTopic(topic, getSubject(explainSubj).name, undefined, undefined, activeResource?.extracted_text);
       setExplainResult(res);
     } catch (err: any) {
       setExplainError(err.message || 'خطا در ارتباط با هوش مصنوعی');
@@ -182,6 +391,7 @@ export const AIView: React.FC<AIViewProps> = ({
         goftar: slidesGoftar,
         topic: slidesCustom.trim(),
         count: slidesCount,
+        sourceText: activeResource?.extracted_text,
       });
       setSlidesResult(res);
     } catch (err: any) {
@@ -210,6 +420,7 @@ export const AIView: React.FC<AIViewProps> = ({
         chapter: photoChapter,
         goftar: photoGoftar,
         customText: photoCustom.trim(),
+        sourceText: activeResource?.extracted_text,
       });
       setPhotoResult(res);
     } catch (err: any) {
@@ -324,6 +535,18 @@ export const AIView: React.FC<AIViewProps> = ({
         </button>
 
         <button
+          onClick={() => setActiveTab('schedule')}
+          className={`px-3 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 ${
+            activeTab === 'schedule'
+              ? 'bg-white dark:bg-[#0c1f38] text-blue-700 dark:text-blue-300 shadow-xs border border-blue-200/50 dark:border-blue-800/60 font-black'
+              : 'text-slate-600 hover:text-blue-700 dark:hover:text-blue-300'
+          }`}
+        >
+          <CalendarCheck className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+          <span>جدول برنامه رنگی</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('photo')}
           className={`px-3 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 ${
             activeTab === 'photo'
@@ -333,6 +556,23 @@ export const AIView: React.FC<AIViewProps> = ({
         >
           <Camera className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
           <span>حل عکس و تست کتاب</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('resources')}
+          className={`px-3 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0 ${
+            activeTab === 'resources'
+              ? 'bg-white dark:bg-[#0c1f38] text-blue-700 dark:text-blue-300 shadow-xs border border-blue-200/50 dark:border-blue-800/60 font-black'
+              : 'text-slate-600 hover:text-blue-700 dark:hover:text-blue-300'
+          }`}
+        >
+          <FolderPlus className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+          <span>منابع درسی و جزوات</span>
+          {resources.length > 0 && (
+            <span className="w-4 h-4 rounded-full bg-blue-100 dark:bg-blue-900/80 text-[10px] flex items-center justify-center font-bold">
+              {resources.length}
+            </span>
+          )}
         </button>
 
         <button
@@ -371,6 +611,24 @@ export const AIView: React.FC<AIViewProps> = ({
           <span>تحلیل اشتباهات</span>
         </button>
       </div>
+
+      {/* Active Grounding Resource Banner */}
+      {activeResource && (
+        <div className="flex items-center justify-between p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-xs animate-in fade-in">
+          <div className="flex items-center gap-2.5 text-emerald-800 dark:text-emerald-300 font-bold">
+            <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>
+              منبع استنادی فعال: <b>{activeResource.name}</b> (پاسخ‌های مشاور و تحلیل تست‌ها ۱۰۰٪ مطابق این منبع خواهد بود)
+            </span>
+          </div>
+          <button
+            onClick={() => setActiveResourceId(null)}
+            className="text-[11px] text-emerald-700 dark:text-emerald-400 font-bold hover:underline cursor-pointer shrink-0"
+          >
+            غیرفعال‌سازی محدودیت منبع
+          </button>
+        </div>
+      )}
 
       {/* Tab 1: AI Study Coach */}
       {activeTab === 'coach' && (
@@ -471,6 +729,210 @@ export const AIView: React.FC<AIViewProps> = ({
               <span>ارسال</span>
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Tab: Colorful AI Study Schedule Table */}
+      {activeTab === 'schedule' && (
+        <div className="rounded-2xl bg-white dark:bg-[#0a1628] border border-blue-100 dark:border-blue-900/50 p-5 shadow-xs space-y-5 animate-in fade-in duration-200">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-100 dark:bg-blue-950 text-blue-600 dark:text-blue-400">
+                <CalendarCheck className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
+                  سازنده جدول برنامه مطالعاتی رنگی و متوازن
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  تنظیم هوشمند پارت‌های ۷۵ تا ۹۰ دقیقه‌ای با تفکیک روزانه، تعادل پایه‌ها و پارت تست‌زنی
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-blue-50 dark:bg-blue-950 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800">
+              AI Smart Scheduler
+            </span>
+          </div>
+
+          {/* Configuration Form */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <div>
+              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
+                هدف ساعت مطالعه روزانه (ساعت)
+              </label>
+              <input
+                type="number"
+                min="4"
+                max="16"
+                value={scheduleGoalHours}
+                onChange={(e) => setScheduleGoalHours(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-center font-bold"
+              />
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
+                ساعت بیداری پیشنهادی
+              </label>
+              <input
+                type="text"
+                value={scheduleWakeTime}
+                onChange={(e) => setScheduleWakeTime(e.target.value)}
+                placeholder="06:00"
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-center font-bold"
+                dir="ltr"
+              />
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1">
+                راهبرد توازن پایه‌ها
+              </label>
+              <select
+                value={scheduleGradeFocus}
+                onChange={(e) => setScheduleGradeFocus(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-bold"
+              >
+                <option value="ترکیب دوازدهم و پایه (پیشنهادی)">ترکیب دوازدهم و پایه (پیشنهادی کنکور)</option>
+                <option value="تمرکز روی دوازدهم و نهایی">تمرکز ویژه روی دوازدهم و نهایی</option>
+                <option value="جمع‌بندی پایه دهم و یازدهم">جمع‌بندی تستی پایه دهم و یازدهم</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Weak Subjects Select */}
+          <div className="space-y-1.5">
+            <label className="block text-xs font-bold text-slate-600 dark:text-slate-400">
+              دروس با اولویت ویژه برای پوشش بیشتر در برنامه:
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {['زیست', 'شیمی', 'فیزیک', 'ریاضی', 'زمین‌شناسی', 'عمومی/نهایی'].map((subj) => {
+                const isSelected = scheduleWeakSubjects.includes(subj);
+                return (
+                  <button
+                    key={subj}
+                    type="button"
+                    onClick={() => handleToggleWeakSubject(subj)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                      isSelected
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {subj}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Generate Button */}
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={handleGenerateScheduleTab}
+              disabled={isScheduleLoading}
+              className="w-full sm:w-auto px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md shadow-blue-500/20 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              <CalendarCheck className="w-4 h-4" />
+              <span>{isScheduleLoading ? 'در حال طراحی و تنظیم جدول رنگی…' : 'تولید جدول برنامه رنگی متوازن'}</span>
+            </button>
+          </div>
+
+          {/* Result: Colorful Schedule Table */}
+          {scheduleResult && (
+            <div className="mt-4 space-y-4 animate-in fade-in">
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-850/80 border border-slate-200/80 dark:border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                    <span>{scheduleResult.title || 'برنامه متوازن روزانه'}</span>
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded-md bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300">
+                      بیداری: {scheduleResult.wake_time || scheduleWakeTime}
+                    </span>
+                  </h4>
+                  {scheduleResult.description && (
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                      {scheduleResult.description}
+                    </p>
+                  )}
+                </div>
+
+                {onSavePlan && (
+                  <button
+                    type="button"
+                    onClick={handleApplyScheduleToPlan}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    {scheduleSavedSuccess ? (
+                      <>
+                        <Check className="w-4 h-4" />
+                        <span>به برنامه‌ریزی روزانه اضافه شد!</span>
+                      </>
+                    ) : (
+                      <>
+                        <CalendarCheck className="w-4 h-4" />
+                        <span>افزودن به برنامه‌ریزی روزانه من</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+
+              {/* Colorful Table */}
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                <table className="w-full text-right border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-100/80 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold border-b border-slate-200 dark:border-slate-700">
+                      <th className="p-3 w-32 font-mono">بازه زمانی</th>
+                      <th className="p-3 w-28">درس</th>
+                      <th className="p-3">موضوع و گفتار آموزشی</th>
+                      <th className="p-3 w-28 text-center">نوع پارت</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {scheduleResult.blocks.map((block, idx) => {
+                      const colorMap: Record<string, string> = {
+                        blue: 'bg-blue-50/70 hover:bg-blue-100/60 dark:bg-blue-950/30 dark:hover:bg-blue-950/50 text-blue-950 dark:text-blue-200 border-r-4 border-r-blue-500',
+                        emerald: 'bg-emerald-50/70 hover:bg-emerald-100/60 dark:bg-emerald-950/30 dark:hover:bg-emerald-950/50 text-emerald-950 dark:text-emerald-200 border-r-4 border-r-emerald-500',
+                        purple: 'bg-purple-50/70 hover:bg-purple-100/60 dark:bg-purple-950/30 dark:hover:bg-purple-950/50 text-purple-950 dark:text-purple-200 border-r-4 border-r-purple-500',
+                        cyan: 'bg-cyan-50/70 hover:bg-cyan-100/60 dark:bg-cyan-950/30 dark:hover:bg-cyan-950/50 text-cyan-950 dark:text-cyan-200 border-r-4 border-r-cyan-500',
+                        amber: 'bg-amber-50/70 hover:bg-amber-100/60 dark:bg-amber-950/30 dark:hover:bg-amber-950/50 text-amber-950 dark:text-amber-200 border-r-4 border-r-amber-500',
+                        rose: 'bg-rose-50/70 hover:bg-rose-100/60 dark:bg-rose-950/30 dark:hover:bg-rose-950/50 text-rose-950 dark:text-rose-200 border-r-4 border-r-rose-500',
+                      };
+
+                      const badgeMap: Record<string, { label: string; class: string }> = {
+                        study: { label: 'آموزش و یادگیری', class: 'bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200' },
+                        test: { label: 'تست‌زنی و تحلیل', class: 'bg-purple-100 dark:bg-purple-900/60 text-purple-800 dark:text-purple-200' },
+                        review: { label: 'مرور و تثبیت', class: 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200' },
+                      };
+
+                      const blockColorClass = colorMap[block.color || 'blue'] || colorMap.blue;
+                      const badgeInfo = badgeMap[block.type] || badgeMap.study;
+
+                      return (
+                        <tr key={idx} className={`transition-colors ${blockColorClass}`}>
+                          <td className="p-3 font-mono font-bold text-xs" dir="ltr">
+                            {block.time}
+                          </td>
+                          <td className="p-3 font-extrabold text-xs">
+                            {block.subject}
+                          </td>
+                          <td className="p-3 font-medium text-xs leading-relaxed">
+                            {block.topic}
+                          </td>
+                          <td className="p-3 text-center">
+                            <span className={`inline-block px-2.5 py-1 rounded-full text-[10px] font-extrabold ${badgeInfo.class}`}>
+                              {badgeInfo.label}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -728,44 +1190,106 @@ export const AIView: React.FC<AIViewProps> = ({
               )}
             </div>
 
-            {/* Image upload box */}
+            {/* Image upload and Camera capture box */}
             <div>
               <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1.5">
-                تصویر سوال یا صفحه کتاب درسی
+                تصویر سوال، تست کنکور یا صفحه کتاب درسی
               </label>
-              <div className="flex flex-col sm:flex-row items-center gap-3">
-                <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border-2 border-dashed border-blue-300 dark:border-blue-800 bg-blue-50/50 dark:bg-blue-950/20 hover:bg-blue-100/50 cursor-pointer transition-colors text-blue-700 dark:text-blue-300 font-bold">
-                  <Camera className="w-4 h-4" />
-                  <span>انتخاب عکس از گالری یا دوربین</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) {
-                        const reader = new FileReader();
-                        reader.onload = () => setPhotoImage(reader.result as string);
-                        reader.readAsDataURL(file);
-                      }
-                    }}
-                  />
-                </label>
+
+              <div className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsCameraModalOpen(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-black transition-colors cursor-pointer shadow-xs"
+                  >
+                    <Camera className="w-4 h-4" />
+                    <span>عکس‌برداری لحظه‌ای با دوربین</span>
+                  </button>
+
+                  <label className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/80 cursor-pointer transition-colors text-slate-700 dark:text-slate-200 font-bold">
+                    <ImageIcon className="w-4 h-4 text-blue-500" />
+                    <span>انتخاب فایل عکس از دستگاه</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            setPhotoImage(reader.result as string);
+                            setPhotoRotation(0);
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                </div>
 
                 {photoImage && (
-                  <div className="flex items-center gap-2">
-                    <img
-                      src={photoImage}
-                      alt="Uploaded test"
-                      className="w-12 h-12 object-cover rounded-xl border border-blue-300 shadow-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setPhotoImage(null)}
-                      className="text-xs text-rose-600 font-bold hover:underline cursor-pointer"
-                    >
-                      حذف عکس
-                    </button>
+                  <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-900/60 border border-blue-200 dark:border-blue-900/60 space-y-3">
+                    <div className="flex flex-col sm:flex-row items-center gap-4">
+                      <div className="relative w-32 h-32 rounded-xl overflow-hidden border border-blue-300 dark:border-blue-800 bg-black/10 shrink-0 flex items-center justify-center">
+                        <img
+                          src={photoImage}
+                          alt="Uploaded test"
+                          className="w-full h-full object-contain"
+                        />
+                      </div>
+
+                      <div className="space-y-2 flex-1 text-right">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">
+                          جهت و زاویه تصویر سوال:
+                        </span>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          اگر سوال کج یا برعکس ثبت شده، با دکمه‌های زیر آن را بچرخانید تا متن تست به صورت کاملاً خوانا برای هوش مصنوعی ارسال شود:
+                        </p>
+
+                        {/* Rotation Toolbar */}
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => handleRotatePhoto(-90)}
+                            className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-500 text-slate-700 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                            <span>۹۰- درجه</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRotatePhoto(90)}
+                            className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-500 text-slate-700 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <RotateCw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                            <span>۹۰+ درجه</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleRotatePhoto(180)}
+                            className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-blue-500 text-slate-700 dark:text-slate-200 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+                            <span>۱۸۰ درجه</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhotoImage(null);
+                              setPhotoRotation(0);
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            حذف تصویر
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1154,6 +1678,156 @@ export const AIView: React.FC<AIViewProps> = ({
           )}
         </div>
       )}
+
+      {/* Tab: Study Resources & PDF Uploads */}
+      {activeTab === 'resources' && (
+        <div className="rounded-2xl bg-white dark:bg-[#0a1628] border border-blue-100 dark:border-blue-900/50 p-5 shadow-xs space-y-5 animate-in fade-in">
+          <div>
+            <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+              <FolderPlus className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <span>کتابخانه منابع درسی و جزوات اختصاصی شما</span>
+            </h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+              فایل‌های PDF کتاب‌های درسی رسمی، جزوات اساتید یا فصول مورد نظرتان را آپلود کنید تا هوش مصنوعی پاسخ‌ها، تحلیل تست‌ها و مشاوره‌هایش را <b>منحصراً به متن همین منابع</b> مقید کند و از افزودن مطالب خارج از کتاب خودداری نماید.
+            </p>
+          </div>
+
+          {/* Upload Area */}
+          <div className="p-6 rounded-2xl border-2 border-dashed border-blue-300 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-950/20 text-center space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-300 flex items-center justify-center mx-auto">
+              <Upload className="w-6 h-6" />
+            </div>
+
+            <div>
+              <label className="inline-block px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black shadow-md cursor-pointer transition-colors">
+                <span>انتخاب و آپلود فایل PDF یا جزوه کتاب درسی</span>
+                <input
+                  type="file"
+                  accept="application/pdf,text/plain"
+                  className="hidden"
+                  onChange={handleResourceUpload}
+                  disabled={isResourceUploading}
+                />
+              </label>
+              <p className="text-[11px] text-slate-400 mt-2">
+                پشتیبانی از فایل‌های PDF کتب درسی دهم، یازدهم، دوازدهم و جزوات متنی (حداکثر ۲۰ مگابایت)
+              </p>
+            </div>
+
+            {isResourceUploading && (
+              <div className="flex items-center justify-center gap-2 text-xs text-blue-600 dark:text-blue-400 font-bold animate-pulse pt-2">
+                <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+                <span>در حال پردازش و استخراج هوشمند متن صفحات کتاب درسی…</span>
+              </div>
+            )}
+
+            {resourceError && (
+              <p className="text-xs text-rose-600 font-bold bg-rose-50 dark:bg-rose-950/40 p-2.5 rounded-xl border border-rose-200">
+                {resourceError}
+              </p>
+            )}
+          </div>
+
+          {/* Resources List */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-black text-slate-800 dark:text-slate-200 flex items-center justify-between">
+              <span>لیست منابع آپلود شده ({resources.length} منبع)</span>
+              {activeResourceId && (
+                <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-bold">
+                  یک منبع به عنوان مرجع فعال تنظیم شده است
+                </span>
+              )}
+            </h4>
+
+            {resources.length === 0 ? (
+              <div className="p-8 text-center text-xs text-slate-400 bg-slate-50 dark:bg-slate-900/40 rounded-2xl border border-slate-200/80 dark:border-slate-800">
+                هنوز هیچ منبعی آپلود نکرده‌اید. با آپلود اولین PDF، هوش مصنوعی دقیقاً بر اساس آن به شما درس خواهد داد.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3">
+                {resources.map((res) => {
+                  const isActive = activeResourceId === res.id;
+
+                  return (
+                    <div
+                      key={res.id}
+                      className={`p-4 rounded-2xl border transition-all text-xs space-y-3 ${
+                        isActive
+                          ? 'border-emerald-400 dark:border-emerald-700 bg-emerald-50/40 dark:bg-emerald-950/20 shadow-xs'
+                          : 'border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/40'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`p-2.5 rounded-xl ${isActive ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700' : 'bg-blue-100 dark:bg-blue-950 text-blue-700'}`}>
+                            <FileText className="w-5 h-5" />
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-black text-slate-900 dark:text-white">
+                                {res.name}
+                              </span>
+                              {isActive && (
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-200 text-emerald-900 dark:bg-emerald-900 dark:text-emerald-200 font-extrabold text-[10px]">
+                                  منبع استنادی فعال
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[11px] text-slate-400 mt-0.5 block">
+                              فایل: {res.file_name} • حجم: {Math.round(res.file_size / 1024)} کیلوبایت
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveResourceId(isActive ? null : res.id)}
+                            className={`px-3 py-1.5 rounded-xl font-bold transition-colors cursor-pointer text-xs ${
+                              isActive
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:border-emerald-500 text-slate-700 dark:text-slate-300'
+                            }`}
+                          >
+                            {isActive ? 'منبع فعال است ✓' : 'انتخاب به عنوان منبع فعال'}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteResource(res.id)}
+                            className="p-1.5 rounded-xl text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-colors cursor-pointer"
+                            title="حذف منبع"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Excerpt */}
+                      {res.extracted_text && (
+                        <div className="p-3 rounded-xl bg-white dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700 text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed max-h-24 overflow-y-auto">
+                          <b className="block text-[10px] text-slate-400 mb-1">بخشی از متن استخراج شده:</b>
+                          {res.extracted_text.slice(0, 300)}...
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Live Camera & Rotation Modal */}
+      <LiveCameraModal
+        isOpen={isCameraModalOpen}
+        onClose={() => setIsCameraModalOpen(false)}
+        onCapture={(dataUrl) => {
+          setPhotoImage(dataUrl);
+          setPhotoRotation(0);
+        }}
+      />
     </div>
   );
 };

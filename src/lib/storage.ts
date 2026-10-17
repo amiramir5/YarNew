@@ -6,6 +6,7 @@ import {
   ProgressEntry,
   QuickNote,
   Session,
+  StudyResource,
 } from '../types';
 import { DEFAULT_EXAM_DATE, DEFAULT_EXAM_TITLE } from './constants';
 import { studyDayKey } from './jalali';
@@ -20,6 +21,7 @@ const STORAGE_KEYS = {
   SETTINGS: 'ky_settings_v2',
   CHECKLIST: 'ky_checklist_v2',
   TIMER_STATE: 'ky_timer_state_v2',
+  RESOURCES: 'ky_resources_v2',
 };
 
 export function uid(): string {
@@ -35,6 +37,14 @@ export const ALLOWED_GEMINI_MODELS = [
   'gemini-2.5-flash',
 ] as const;
 
+export const ALLOWED_OPENROUTER_MODELS = [
+  'deepseek/deepseek-chat',
+  'deepseek/deepseek-r1',
+  'google/gemini-2.5-flash',
+  'meta-llama/llama-3.3-70b-instruct',
+  'qwen/qwen-2.5-72b-instruct',
+] as const;
+
 export function getDefaultSettings(): AppSettings {
   return {
     theme: 'light',
@@ -46,8 +56,10 @@ export function getDefaultSettings(): AppSettings {
     vibrationEnabled: true,
     deviceId: uid(),
     ai: {
+      provider: 'gemini',
       geminiKey: '',
       geminiModel: 'gemini-3.5-flash',
+      proactiveEnabled: true,
     },
   };
 }
@@ -203,12 +215,22 @@ export function loadSettings(): AppSettings {
       ? savedModel
       : defaults.ai.geminiModel;
 
+  const savedOpenrouterModel = current?.ai?.openrouterModel;
+  const validOpenrouterModel =
+    typeof savedOpenrouterModel === 'string' && savedOpenrouterModel.trim()
+      ? savedOpenrouterModel.trim()
+      : defaults.ai.openrouterModel || 'deepseek/deepseek-chat';
+
   const merged: AppSettings = {
     ...defaults,
     ...current,
     ai: {
+      provider: current?.ai?.provider === 'openrouter' ? 'openrouter' : 'gemini',
       geminiKey: typeof current?.ai?.geminiKey === 'string' ? current.ai.geminiKey : defaults.ai.geminiKey,
       geminiModel: validModel,
+      ...(current?.ai?.openrouterKey ? { openrouterKey: current.ai.openrouterKey } : {}),
+      ...(current?.ai?.openrouterModel ? { openrouterModel: validOpenrouterModel } : {}),
+      proactiveEnabled: current?.ai?.proactiveEnabled !== undefined ? Boolean(current.ai.proactiveEnabled) : true,
       ...(current?.ai?.coachPlanGoal ? { coachPlanGoal: current.ai.coachPlanGoal } : {}),
     },
   };
@@ -216,6 +238,16 @@ export function loadSettings(): AppSettings {
 }
 export function saveSettings(settings: AppSettings): void {
   setStored(STORAGE_KEYS.SETTINGS, settings);
+}
+
+export function loadStudyResources(customEmail?: string): StudyResource[] {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.RESOURCES, customEmail);
+  return getStored<StudyResource[]>(scopedKey, []);
+}
+
+export function saveStudyResources(resources: StudyResource[], customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.RESOURCES, customEmail);
+  setStored(scopedKey, resources);
 }
 
 export function loadChecklist(): Record<string, boolean> {

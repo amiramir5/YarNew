@@ -9,10 +9,11 @@ import {
   Image as ImageIcon,
   CheckCircle2,
   AlertCircle,
-  HelpCircle,
   Layers,
+  Eye,
 } from 'lucide-react';
 import { MistakeCard } from '../../types';
+import { LeitnerBoxInspectModal } from '../common/LeitnerBoxInspectModal';
 import {
   SUBJECTS,
   SUBJECT_CHAPTERS,
@@ -128,6 +129,7 @@ export const MistakesView: React.FC<MistakesViewProps> = ({
   // Checklist Filter State
   const [checklistGrade, setChecklistGrade] = useState<'دهم' | 'یازدهم' | 'دوازدهم'>('دهم');
   const [checklistSubject, setChecklistSubject] = useState('bio');
+  const [inspectBox, setInspectBox] = useState<number | null>(null);
 
   // Filter chapters based on selected grade
   const allSubjChapters = SUBJECT_CHAPTERS[subject] || [];
@@ -236,17 +238,28 @@ export const MistakesView: React.FC<MistakesViewProps> = ({
 
         <div className="grid grid-cols-5 gap-2 text-center text-xs">
           {[1, 2, 3, 4, 5].map((b, idx) => (
-            <div
+            <button
               key={b}
-              className="p-3 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40"
+              type="button"
+              onClick={() => setInspectBox(b)}
+              className="p-3 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 hover:bg-blue-50/60 dark:hover:bg-blue-950/40 hover:border-blue-400 dark:hover:border-blue-700 transition-all cursor-pointer group text-right flex flex-col justify-between"
+              title="کلیک برای مشاهده موقت کارت‌ها و تست‌های این مرحله بدون تغییر وضعیت"
             >
-              <span className="block text-[11px] text-slate-500 dark:text-slate-400 font-semibold mb-1">
-                مرحله {faNum(b)} ({faNum(LEITNER_DAYS[idx])} روز)
-              </span>
-              <span className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
-                {faNum(boxCounts[idx])}
-              </span>
-            </div>
+              <div className="flex items-center justify-between w-full mb-1">
+                <span className="block text-[11px] text-slate-500 dark:text-slate-400 font-semibold group-hover:text-blue-600 dark:group-hover:text-blue-400">
+                  مرحله {faNum(b)} ({faNum(LEITNER_DAYS[idx])} روز)
+                </span>
+                <Eye className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors" />
+              </div>
+              <div className="flex items-baseline justify-between w-full">
+                <span className="text-lg font-black font-mono text-blue-600 dark:text-blue-400">
+                  {faNum(boxCounts[idx])}
+                </span>
+                <span className="text-[10px] text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-300 font-medium">
+                  مشاهده کارت‌ها
+                </span>
+              </div>
+            </button>
           ))}
         </div>
       </div>
@@ -694,6 +707,17 @@ export const MistakesView: React.FC<MistakesViewProps> = ({
           })}
         </div>
       </div>
+
+      {inspectBox !== null && (
+        <LeitnerBoxInspectModal
+          isOpen={true}
+          onClose={() => setInspectBox(null)}
+          boxNumber={inspectBox}
+          intervalDays={LEITNER_DAYS[inspectBox - 1] || 1}
+          cards={mistakes}
+          onOpenLightbox={onOpenLightbox}
+        />
+      )}
     </div>
   );
 };
