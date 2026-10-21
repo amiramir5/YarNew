@@ -77,7 +77,6 @@ import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { BottomNav } from './components/BottomNav';
 import { CommandPalette } from './components/CommandPalette';
-import { InstallPwaBanner } from './components/common/InstallPwaBanner';
 import { AuthModal } from './components/common/AuthModal';
 import { ProactiveFloatingWidget } from './components/common/ProactiveFloatingWidget';
 
@@ -1036,8 +1035,8 @@ export default function App() {
         }}
       />
 
-      {/* PWA Direct Installation Banner for Mobile & Chrome */}
-      <InstallPwaBanner />
+      {/* PWA install banner removed (2026-10-22): noisy for users who already installed */}
+
 
       <div className="flex-1 flex max-w-7xl w-full mx-auto">
         {/* Desktop Sidebar */}

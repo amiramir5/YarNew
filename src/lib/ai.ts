@@ -256,12 +256,41 @@ async function callGeminiDirect(params: {
   try {
     return await requestOnce(!!params.onChunk);
   } catch (err: any) {
+    const msg = err?.message || '';
+
     // Safety net: some model versions reject unknown thinking/NIM fields — retry once bare.
-    if (isOpenAiThinkingError(err?.message || '') && generationConfig.thinkingConfig) {
+    if (isOpenAiThinkingError(msg) && generationConfig.thinkingConfig) {
       delete generationConfig.thinkingConfig;
-      return await requestOnce(!!params.onChunk);
+      try {
+        return await requestOnce(false);
+      } catch (retryErr: any) {
+        // One more chance: plain non-stream call without any thinking tweaks
+        await new Promise((r) => setTimeout(r, 900));
+        return await requestOnce(false);
+      }
     }
-    throw err;
+
+    // Transient failures (server blips, dropped SSE, empty output, network hiccups)
+    // retry once as a plain non-streaming call — this removes the random
+    // "یکی در میان ارور میدهد" behaviour of streaming chat.
+    const transient =
+      /\(5\d\d\)/.test(msg) ||
+      /پاسخی تولید نکرد/.test(msg) ||
+      /unexpected (end|eof)/i.test(msg) ||
+      /failed to fetch|networkerror|load failed/i.test(msg);
+    if (!transient) throw err;
+
+    await new Promise((r) => setTimeout(r, 900));
+    try {
+      return await requestOnce(false);
+    } catch (retryErr: any) {
+      const retryMsg = retryErr?.message || '';
+      if (/\(5\d\d\)/.test(retryMsg) || /پاسخی تولید نکرد/.test(retryMsg)) {
+        await new Promise((r) => setTimeout(r, 1500));
+        return await requestOnce(false);
+      }
+      throw retryErr;
+    }
   }
 }
 
@@ -623,13 +652,22 @@ ${JSON.stringify(sample, null, 2)}
 }
 
 const COACH_SYSTEM_PROMPT = `تو «مشاور کنکوریار»، مشاور مطالعهٔ کنکور سراسری تجربی ایران هستی.
-محدوده پاسخ‌گویی تو فقط این موارد است: درس‌ها و مباحث کتب درسی رسمی (دهم، یازدهم، دوازدهم)، حل تست و آسیب‌شناسی غلط‌ها، روش مطالعه، برنامه‌ریزی روزانه، مدیریت استرس جلسه آزمون، و اخبار/قوانین رسمی سازمان سنجش.
-اگر سؤال خارج از این محدوده بود (موضوعات روزمره، سیاسی، فناوری، ورزشی یا هر چیز غیرکنکوری)، در حداکثر یک جمله مؤدبانه بگو «این موضوع خارج از محدوده کنکور است» و روی کار اصلی برگرد.
+[دیوار محدوده — مهم‌ترین قانون]
+ابتدا پیام آخر دانش‌آموز را با این فیلتر بسنج: آیا جای آن در یکی از این ۳ سبد است؟
+۱) درس/مبحث/کتاب درسی مثل (دهم، یازدهم، دوازدهم): توضیح، خلاصه، حل تست، رفع اشکال
+۲) روش مطالعه، برنامه‌ریزی، بازه‌زنی، مرور، مدیریت زمان و استرس آزمون
+۳) قوانین و اطلاعیه‌های رسمی سازمان سنجش کنکور
+اگر جواب «خیر» بود، پاسخ فقط و فقط این یک جمله باشد:
+«این موضوع خارج از محدوده کنکور است؛ سؤال درسی یا برنامه‌ریزی‌ات را بپرز تا کامل راهنمایی‌ات کنم.»
+بدون هیچ متن اضافه، تگ، اموجی یا ادامه. این قانون حتی وقتی دانش‌آموز اصرار کند هم برقرار است.
+مثال‌های خارج از محدوده (پاسخ فقط همان یک جمله): «کدوم گوشی بخرم؟» / «شام چی بخورم؟» / «آخرین شایعات فوتبال؟» / «سریال چی ببینم؟»
+استثنا: سؤال درباره خودِ اپ کنکوریار یا درباره خودت/قابلیت‌هایت مجاز است.
 قواعد سبک پاسخ (کاملاً الزامی):
-- پاسخ کوتاه و فشرده باشد: معمولاً حداکثر ۸ تا ۱۲ خط؛ فقط اگر کاربر صریحاً «برنامه» یا «توضیح کامل» بخواهد می‌توانی مفصل‌تر بنویسی.
-- بدون تعارف و پرهیاهو و جمله‌های اضافی؛ بدون لحن احساساتی تکراری. مستقیم سر اصل مطلب برو.
+- حداکثر ۸ تا ۱۲ خط، فشرده و عملیاتی؛ فقط اگر کاربر صریحاً «برنامه» یا «توضیح کامل» بخواهد مفصل‌تر بنویس.
+- بدون تعارف و بدون تکرار سؤال؛ لحن آرام و مستقیم، سر اصل مطلب.
 - از فهرست شماره‌دار یا دکمه‌ای کوتاه استفاده کن، نه پاراگراف‌های طولانی.
 - برای هر نکته آماری یا قانونی به «بر اساس مصوبات سنجش» یا خط کتاب اشاره کن؛ منبع داستانی/سایت‌های غیررسمی ذکر نکن.
+- پایان هر پاسخ یک اقدام مشخص پیشنهاد بده (مثلاً: «امشب ۳۰ دقیقه روی گفتار ۳ فصل ۱ زیست بگذار»).
 - پاسخ به فارسی سلیس و روان بده.`;
 
 export async function consultCoach(
