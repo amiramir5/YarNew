@@ -330,8 +330,14 @@ export function saveTimerState(state: StoredTimerState | null, customEmail?: str
 }
 
 // Full Export / Import
-export function exportAllDataJson(): void {
-  const settings = loadSettings();
+
+/**
+ * Build the full backup payload. `stripImages` drops inline data-URL images
+ * (the usual multi-MB offender) so snapshots fit comfortably in localStorage.
+ */
+export function buildBackupPayload(stripImages = false, stripHistory = false) {
+  let settings = loadSettings();
+  if (!settings) return null;
   // Clean all sensitive provider keys from export
   const safeSettings = {
     ...settings,
@@ -342,7 +348,14 @@ export function exportAllDataJson(): void {
     },
   };
 
-  const payload = {
+  const mistakes: MistakeCard[] = loadMistakes().map((m) => {
+    const copy: any = { ...m };
+    if (stripImages) copy.image_data = null;
+    if (stripHistory) copy.history = [];
+    return copy as MistakeCard;
+  });
+
+  return {
     app: 'konkoor-yar-2.0',
     version: 2,
     exported_at: new Date().toISOString(),
@@ -350,7 +363,7 @@ export function exportAllDataJson(): void {
       settings: safeSettings,
       sessions: loadSessions(),
       exams: loadExams(),
-      mistakes: loadMistakes(),
+      mistakes,
       plans: loadPlans(),
       notes: loadNotes(),
       progress: loadProgress(),
@@ -358,6 +371,11 @@ export function exportAllDataJson(): void {
       resources: loadStudyResources(),
     },
   };
+}
+
+export function exportAllDataJson(): void {
+  const payload = buildBackupPayload();
+  if (!payload) return;
 
   const blob = new Blob([JSON.stringify(payload, null, 2)], {
     type: 'application/json;charset=utf-8',
@@ -370,6 +388,121 @@ export function exportAllDataJson(): void {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---------------------------------------------------------------------------
+// Automatic nightly backups (local rolling 7-day window + optional cloud copy)
+// ---------------------------------------------------------------------------
+const AUTO_BACKUP_META_KEY = 'ky_auto_backup_meta_v1';
+const AUTO_BACKUP_SLOTS = 7;
+const AUTO_BACKUP_BUDGET = 2_500_000; // JSON chars, below the ~5MB quota
+
+export interface AutoBackupMeta {
+  day: string;
+  takenAt: number;
+  slot: string;
+  sizeBytes: number;
+  strippedImages: boolean;
+}
+
+function autoBackupSlotKey(dayKey: string, stripFlag: string): string {
+  // Weekly rotation: one slot per weekday — 7 snapshots cover the last week
+  const weekday = new Date().getDay();
+  return `ky_auto_backup_v1__${weekday}${stripFlag}`;
+}
+
+function autoBackupMeta(customEmail?: string): AutoBackupMeta | null {
+  const key = getUserScopedKey(AUTO_BACKUP_META_KEY, customEmail);
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as AutoBackupMeta) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAutoBackupMeta(meta: AutoBackupMeta, customEmail?: string) {
+  const key = getUserScopedKey(AUTO_BACKUP_META_KEY, customEmail);
+  try {
+    localStorage.setItem(key, JSON.stringify(meta));
+  } catch {}
+}
+
+export function getAutoBackupInfo(customEmail?: string): {
+  meta: AutoBackupMeta | null;
+  slots: Array<{ slot: string; exists: boolean; sizeBytes: number; exportedAt: string | null }>;
+} {
+  if (typeof window === 'undefined') return { meta: null, slots: [] };
+  const slots = [];
+  for (let weekday = 0; weekday < AUTO_BACKUP_SLOTS; weekday++) {
+    for (const suffix of ['', '__imgstrip']) {
+      const slot = `ky_auto_backup_v1__${weekday}${suffix}`;
+      const key = getUserScopedKey(slot, customEmail);
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      let exportedAt: string | null = null;
+      try {
+        exportedAt = String(JSON.parse(raw)?.exported_at) || null;
+      } catch {}
+      slots.push({ slot, exists: true, sizeBytes: raw.length, exportedAt });
+    }
+  }
+  return { meta: autoBackupMeta(customEmail), slots };
+}
+
+/**
+ * Take one snapshot per study-day (nightly). Runs the strip ladder when quota
+ * pressure hits. Returns the meta on success (dedupe by meta.day), null when
+ * nothing was taken.
+ */
+export function runNightlyAutoBackup(customEmail?: string): AutoBackupMeta | null {
+  if (typeof window === 'undefined') return null;
+  const dayKey = studyDayKey();
+  const prev = autoBackupMeta(customEmail);
+  if (prev?.day === dayKey) return null; // already backed up today
+
+  const attempts: Array<{ stripImages: boolean; stripHistory: boolean }> = [
+    { stripImages: false, stripHistory: false },
+    { stripImages: true, stripHistory: false },
+    { stripImages: true, stripHistory: true },
+  ];
+  for (const attempt of attempts) {
+    const payload = buildBackupPayload(attempt.stripImages, attempt.stripHistory);
+    if (!payload) return null;
+    const json = JSON.stringify(payload);
+    if (json.length > AUTO_BACKUP_BUDGET) continue;
+    const slot = autoBackupSlotKey(dayKey, attempt.stripImages ? '__imgstrip' : '');
+    try {
+      localStorage.setItem(getUserScopedKey(slot, customEmail), json);
+      const meta: AutoBackupMeta = {
+        day: dayKey,
+        takenAt: Date.now(),
+        slot: `${new Date().getDay()}${attempt.stripImages ? '__imgstrip' : ''}`,
+        sizeBytes: json.length,
+        strippedImages: attempt.stripImages,
+      };
+      writeAutoBackupMeta(meta, customEmail);
+      return meta;
+    } catch {
+      // quota — try the next strip level (slot key differs per level)
+    }
+  }
+  console.warn('[AutoBackup] Snapshot exceeds localStorage budget even after stripping.');
+  return null;
+}
+
+/**
+ * Restore one auto-backup slot through the standard importer.
+ */
+export function restoreAutoBackupFromSlot(slot: string, customEmail?: string): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const raw = localStorage.getItem(getUserScopedKey(slot, customEmail));
+    if (!raw) return false;
+    return importAllDataJson(raw);
+  } catch {
+    return false;
+  }
 }
 
 export function importAllDataJson(jsonText: string): boolean {

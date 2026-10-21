@@ -21,6 +21,10 @@ import {
   exportMistakesCsv,
   exportSessionsCsv,
   importAllDataJson,
+  getAutoBackupInfo,
+  restoreAutoBackupFromSlot,
+  runNightlyAutoBackup,
+  AutoBackupMeta,
 } from '../../lib/storage';
 import { testAiConnection } from '../../lib/ai';
 import {
@@ -94,6 +98,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     message: '',
     onConfirm: () => {},
   });
+
+  const [backupInfo, setBackupInfo] = useState(() => getAutoBackupInfo());
 
   const handleSaveGeneral = (e: React.FormEvent) => {
     e.preventDefault();
@@ -707,6 +713,70 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               className="hidden"
             />
           </label>
+        </div>
+
+        {/* Automatic nightly backups */}
+        <div className="rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200/70 dark:border-emerald-900/50 p-3.5 space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div>
+              <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                پشتیبان‌گیری خودکار هر شب
+              </p>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                هر روز یک نسخه از اطلاعات شما خودکار ذخیره می‌شود (۷ نسخه آخر روی همین دستگاه + یک نسخه روی سرور).
+              </p>
+            </div>
+            <button
+              onClick={() => {
+                runNightlyAutoBackup();
+                setBackupInfo(getAutoBackupInfo());
+                setDialogConfig({ isOpen: true, title: 'پشتیبان‌گیری', message: 'نسخه شبانه همین لحظه گرفته شد. ✅', isAlertOnly: true, onConfirm: () => {} });
+              }}
+              className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors"
+            >
+              همین حالا پشتیبان بگیر
+            </button>
+          </div>
+
+          {backupInfo.meta && (
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              آخرین نسخه: <span className="font-bold text-emerald-700 dark:text-emerald-300">{new Date(backupInfo.meta.takenAt).toLocaleString('fa-IR')}</span>
+              {' · '}
+              {(backupInfo.meta.sizeBytes / 1024).toFixed(0)} کیلوبایت
+              {backupInfo.meta.strippedImages ? ' · بدون عکس (صرفه‌جویی ظرفیت)' : ' · کامل'}
+            </p>
+          )}
+
+          {backupInfo.slots.length > 0 && (
+            <div className="space-y-1.5 max-h-40 overflow-y-auto pl-1">
+              {backupInfo.slots.map((s) => (
+                <div key={s.slot} className="flex items-center justify-between gap-2 bg-white dark:bg-slate-900 rounded-lg px-2.5 py-1.5 border border-slate-100 dark:border-slate-800">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate">
+                    {s.exportedAt ? new Date(s.exportedAt).toLocaleString('fa-IR') : s.slot}
+                    {' · '}
+                    {(s.sizeBytes / 1024).toFixed(0)} KB
+                  </span>
+                  <button
+                    onClick={() => {
+                      if (window.confirm('نسخه فعلی اطلاعات دستگاه با این پشتیبان جایگزین می‌شود. مطمئن هستید؟')) {
+                        const ok = restoreAutoBackupFromSlot(s.slot);
+                        setDialogConfig({
+                          isOpen: true,
+                          title: ok ? 'بازیابی شد' : 'خطا',
+                          message: ok ? 'اطلاعات با موفقیت از نسخه خودکار بازیابی شد.' : 'بازیابی ناموفق بود.',
+                          isAlertOnly: true,
+                          onConfirm: () => {},
+                        });
+                      }
+                    }}
+                    className="px-2.5 py-1 shrink-0 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-900/40 text-[11px] font-bold transition-colors"
+                  >
+                    بازیابی
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

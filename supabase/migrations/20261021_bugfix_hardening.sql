@@ -1,6 +1,7 @@
 -- ============================================================================
 -- 20261021_bugfix_hardening.sql
 -- رفع باگ‌های امنیتی/دقیق‌بودن لایه Supabase:
+--   صفر) تابع کمکی is_pair_member
 --   ۱) محافظ Last-Write-Wins روی همه جداول داده (upsert قدیمی نباید داده جدید را نابود کند)
 --   ۲) یکتایی واقعی کد دعوت (invite_code) حتی روی دیتابیس‌های قدیمی
 --   ۳) backfill و NOT NULL کردن expires_at (کد دعوت منقضی‌نشدهٔ بی‌نهایت)
@@ -8,6 +9,22 @@
 --   ۵) اجازه خواندن mistakes برای هم‌جفت (پارتنر) — هم‌تراز با sessions/exams/plans
 -- این اسکریپت idempotent است و می‌توانید چند بار اجرا کنید.
 -- ============================================================================
+
+-- ------------------------------------------------------------------
+-- صفر) تابع کمکی is_pair_member (در برخی دیتابیس‌های قدیمی وجود ندارد)
+-- ------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.is_pair_member(p_pair_code text)
+RETURNS BOOLEAN AS $$
+BEGIN
+  RETURN EXISTS (
+    SELECT 1 FROM public.pair_members
+    WHERE pair_code = p_pair_code AND user_id = auth.uid()
+  );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
+
+REVOKE EXECUTE ON FUNCTION public.is_pair_member(text) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.is_pair_member(text) TO authenticated;
 
 -- ------------------------------------------------------------------
 -- ۱) LWW Guard: روی UPDATE، اگر payload قدیمی‌تر از ردیف موجود بود، رد شود
@@ -87,6 +104,7 @@ ALTER TABLE public.pairs ALTER COLUMN expires_at SET NOT NULL;
 -- ------------------------------------------------------------------
 -- ۴) join_pair با LIMIT 1 (با ایندکس یکتا عملاً تک‌ردیف است، ولی محکم‌کاری)
 -- ------------------------------------------------------------------
+DROP FUNCTION IF EXISTS public.join_pair(text);
 CREATE OR REPLACE FUNCTION public.join_pair(p_invite_code text)
 RETURNS jsonb AS $$
 DECLARE
@@ -175,3 +193,4 @@ CREATE POLICY "Mistakes Pair Read" ON public.mistakes
     auth.uid() = user_id
     OR (pair_code IS NOT NULL AND public.is_pair_member(pair_code))
   );
+

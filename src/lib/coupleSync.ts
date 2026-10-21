@@ -1,5 +1,6 @@
 import { getSupabaseClient } from './supabase';
 import { studyDayKey } from './jalali';
+import { sanitizePayload } from './payload';
 
 export interface CoupleMemberState {
   role: 'husband' | 'wife';
@@ -661,7 +662,7 @@ export async function broadcastMyState(
         const { data: upsertData, error: upsertError } = await supabase
           .from('couple_live_states')
           .upsert(
-            {
+            sanitizePayload('couple_live_states', {
               pair_code: settings.pairCode,
               role: settings.myRole,
               user_id: userId,
@@ -677,8 +678,7 @@ export async function broadcastMyState(
               today_tests: fullState.todayTests,
               study_day: day,
               online: fullState.online,
-              updated_at: new Date().toISOString(),
-            },
+            }),
             { onConflict: 'pair_code,role' }
           )
           .select('updated_at')

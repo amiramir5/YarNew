@@ -1,97 +1,77 @@
-const CACHE_NAME = 'konkouryar-cache-v3';
-const PRECACHE_ASSETS = [
-  './',
-  './index.html',
-  './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
-];
+/* YarNew offline shell service worker
+ * Strategy:
+ *  - App navigation (index.html): network-first, falls back to cache → the app
+ *    opens even with no internet (مثلاً قطعی کامل نت).
+ *  - Same-origin static assets (JS/CSS/fonts): cache-first + runtime cache.
+ *  - API calls (Supabase REST/auth/functions): NEVER cached — the app already
+ *    queues writes in the outbox and flushes them when connectivity returns.
+ */
+const SHELL_CACHE = 'yarnew-shell-v1';
+const RUNTIME_CACHE = 'yarnew-runtime-v1';
+const SHELL_URLS = ['./', './index.html'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(PRECACHE_ASSETS))
-      .then(() => self.skipWaiting())
+    caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_URLS)).then(() => self.skipWaiting())
   );
 });
 
 self.addEventListener('activate', (event) => {
   event.waitUntil(
-    caches
-      .keys()
-      .then((cacheNames) => {
-        return Promise.all(
-          cacheNames.map((cacheName) => {
-            if (cacheName !== CACHE_NAME) {
-              return caches.delete(cacheName);
-            }
-          })
-        );
-      })
-      .then(() => self.clients.claim())
+    caches.keys().then((keys) =>
+      Promise.all(
+        keys.filter((k) => k !== SHELL_CACHE && k !== RUNTIME_CACHE).map((k) => caches.delete(k))
+      )
+    ).then(() => self.clients.claim())
   );
 });
 
 self.addEventListener('fetch', (event) => {
-  // Only handle GET requests and skip Supabase / external AI API calls
-  if (
-    event.request.method !== 'GET' ||
-    !event.request.url.startsWith('http') ||
-    event.request.url.includes('/api/') ||
-    event.request.url.includes('supabase.co') ||
-    event.request.url.includes('openrouter.ai') ||
-    event.request.url.includes('generativelanguage.googleapis.com')
-  ) {
-    return;
-  }
+  const req = event.request;
+  if (req.method !== 'GET') return; // writes go straight to network/outbox logic
+  const url = new URL(req.url);
 
-  // Network first for HTML navigation, Cache first for assets
-  if (event.request.mode === 'navigate') {
+  // Never intercept the data API / auth / functions
+  const isDataApi =
+    url.hostname.endsWith('.supabase.co') ||
+    url.hostname.endsWith('.supabase.in') ||
+    url.pathname.includes('/rest/v1') ||
+    url.pathname.includes('/auth/v1') ||
+    url.pathname.includes('/functions/v1') ||
+    url.pathname.includes('/storage/v1');
+  if (isDataApi) return;
+
+  if (url.origin !== self.location.origin) return;
+
+  // App documents: network-first with offline cache fallback
+  if (req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html')) {
     event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200) {
-            const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          }
-          return response;
+      fetch(req)
+        .then((res) => {
+          const copy = res.clone();
+          caches.open(SHELL_CACHE).then((c) => c.put(req, copy)).catch(() => {});
+          return res;
         })
-        .catch(async () => {
-          const matched = (await caches.match('./index.html')) || (await caches.match(event.request));
-          return (
-            matched ||
-            new Response('Offline - کنکوریار ۲.۰', {
-              status: 503,
-              statusText: 'Service Unavailable',
-              headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-            })
-          );
-        })
+        .catch(() =>
+          caches.match(req).then((hit) => hit || caches.match('./index.html') || caches.match('./'))
+        )
     );
     return;
   }
 
-  // Stale-while-revalidate for static assets
+  // Static assets: cache-first, refresh in background
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (
-            networkResponse &&
-            networkResponse.status === 200 &&
-            networkResponse.type === 'basic'
-          ) {
-            const responseToCache = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
+    caches.match(req).then((hit) => {
+      const network = fetch(req)
+        .then((res) => {
+          if (res && res.status === 200 && res.type === 'basic') {
+            const copy = res.clone();
+            caches.open(RUNTIME_CACHE).then((c) => c.put(req, copy)).catch(() => {});
           }
-          return networkResponse;
+          return res;
         })
-        .catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
+        .catch(() => hit);
+      return hit || network;
     })
   );
 });

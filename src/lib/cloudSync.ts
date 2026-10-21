@@ -1,4 +1,4 @@
-import {
+﻿import {
   Session,
   Exam,
   MistakeCard,
@@ -23,18 +23,22 @@ import {
   getActiveUserEmail,
 } from './storage';
 import { mapDatabaseToExam, mapDatabaseToMistake, mapExamToDatabase, mapMistakeToDatabase } from './schemaValidator';
+import { sanitizePayload, TABLE_COLUMNS } from './payload';
+
+export { sanitizePayload, TABLE_COLUMNS };
 
 export type SyncStatus = 'synced' | 'syncing' | 'pending' | 'error';
 
 export interface OutboxItem {
   id: string;
-  type: 'session' | 'exam' | 'mistake' | 'plan' | 'note' | 'progress' | 'checklist' | 'settings';
+  type: 'session' | 'exam' | 'mistake' | 'plan' | 'note' | 'progress' | 'checklist' | 'settings' | 'backup';
   payload: any;
   retryCount: number;
   addedAt: number;
 }
 
 const OUTBOX_KEY = 'ky_sync_outbox_v2';
+
 let currentSyncStatus: SyncStatus = 'synced';
 const syncListeners = new Set<(status: SyncStatus) => void>();
 
@@ -265,7 +269,7 @@ export async function pushSessionToCloud(
       type: session.type,
     };
 
-    const { error } = await supabase.from('sessions').upsert(payload);
+    const { error } = await supabase.from('sessions').upsert(sanitizePayload('sessions', payload));
 
     if (error) {
       console.warn('Error pushing session:', error.message);
@@ -303,7 +307,7 @@ export async function pushExamToCloud(
   try {
     const payload = mapExamToDatabase(exam, userId, pairCode, myEmail);
 
-    const { error } = await supabase.from('exams').upsert(payload);
+    const { error } = await supabase.from('exams').upsert(sanitizePayload('exams', payload));
 
     if (error) {
       console.warn('Error pushing exam:', error.message);
@@ -349,7 +353,7 @@ export async function pushMistakeToCloud(
 
     const payload = mapMistakeToDatabase(card, userId, pairCode, myEmail, finalImageData);
 
-    const { error } = await supabase.from('mistakes').upsert(payload);
+    const { error } = await supabase.from('mistakes').upsert(sanitizePayload('mistakes', payload));
 
     if (error) {
       console.warn('Error pushing mistake:', error.message);
@@ -385,7 +389,7 @@ export async function pushPlanToCloud(
 
   setSyncStatus('syncing');
   try {
-    const { error } = await supabase.from('daily_plans').upsert({
+    const { error } = await supabase.from('daily_plans').upsert(sanitizePayload('daily_plans', {
       id: plan.id,
       user_id: userId,
       created_at: plan.created_at || Date.now(),
@@ -397,7 +401,7 @@ export async function pushPlanToCloud(
       day: plan.day,
       wake_time: plan.wake_time || '06:00',
       items: plan.items || [],
-    });
+    }));
 
     if (error) {
       console.warn('Error pushing plan:', error.message);
@@ -432,7 +436,7 @@ export async function pushNoteToCloud(
   }
 
   try {
-    const { error } = await supabase.from('quick_notes').upsert({
+    const { error } = await supabase.from('quick_notes').upsert(sanitizePayload('quick_notes', {
       id: note.id,
       user_id: userId,
       created_at: note.created_at || Date.now(),
@@ -444,7 +448,7 @@ export async function pushNoteToCloud(
       day: note.day || '',
       text: note.text,
       ts: note.ts || Date.now(),
-    });
+    }));
 
     if (error) {
       console.warn('Error pushing note:', error.message);
@@ -475,7 +479,7 @@ export async function pushProgressToCloud(
   }
 
   try {
-    const { error } = await supabase.from('progress_entries').upsert({
+    const { error } = await supabase.from('progress_entries').upsert(sanitizePayload('progress_entries', {
       id: entry.id,
       user_id: userId,
       created_at: entry.created_at || Date.now(),
@@ -488,7 +492,7 @@ export async function pushProgressToCloud(
       subject: entry.subject,
       chapter: entry.chapter,
       note: entry.note || '',
-    });
+    }));
 
     if (error) {
       console.warn('Error pushing progress:', error.message);
@@ -521,7 +525,7 @@ export async function pushChecklistToCloud(
 
   try {
     const stableId = `chk-${day}-${userId ?? 'local'}`;
-    const { error } = await supabase.from('user_checklists').upsert({
+    const { error } = await supabase.from('user_checklists').upsert(sanitizePayload('user_checklists', {
       id: stableId,
       user_id: userId,
       created_at: Date.now(),
@@ -530,7 +534,7 @@ export async function pushChecklistToCloud(
       pair_code: pairCode || null,
       day,
       items: checklist,
-    });
+    }));
 
     if (error) {
       console.warn('Error pushing checklist:', error.message);
@@ -540,6 +544,55 @@ export async function pushChecklistToCloud(
     return true;
   } catch {
     if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}-${userId ?? 'local'}`, day, items: checklist });
+    return false;
+  }
+}
+
+/**
+ * Push the nightly automatic backup snapshot to the cloud `app_backups` table.
+ * One row per user (PK user_id) — always holds the newest snapshot. If this
+ * fails (offline), the snapshot is queued so it syncs once connectivity returns.
+ */
+export async function pushAutoBackupToCloud(
+  backup: { id?: string; data: any; deviceId?: string; takenAt?: number },
+  options?: { skipQueue?: boolean }
+): Promise<boolean> {
+  const supabase = getSupabaseClient();
+  const userId = await getAuthUserId();
+
+  if (!supabase || !userId || !backup?.data) {
+    // Give the queued payload a stable per-day id so repeated retries dedupe
+    if (!options?.skipQueue) {
+      const day = new Date().toISOString().slice(0, 10);
+      queueForSync('backup', { id: backup?.id || `backup-${day}`, ...backup });
+    }
+    return false;
+  }
+
+  try {
+    const payload = sanitizePayload('app_backups', {
+      user_id: userId,
+      device_id: backup.deviceId || 'client',
+      created_at: backup.takenAt || Date.now(),
+      data: backup.data,
+    });
+    const { error } = await supabase.from('app_backups').upsert(payload);
+    if (error) {
+      console.warn('Error pushing auto-backup:', error.message);
+      if (!options?.skipQueue) {
+        const day = new Date().toISOString().slice(0, 10);
+        queueForSync('backup', { id: backup.id || `backup-${day}`, ...backup });
+      }
+      return false;
+    }
+    console.info('[Backup] Cloud backup synced.');
+    return true;
+  } catch (err) {
+    console.warn('Network error pushing auto-backup:', err);
+    if (!options?.skipQueue) {
+      const day = new Date().toISOString().slice(0, 10);
+      queueForSync('backup', { id: backup.id || `backup-${day}`, ...backup });
+    }
     return false;
   }
 }
@@ -570,14 +623,14 @@ export async function pushSettingsToCloud(
       },
     };
 
-    const { error } = await supabase.from('user_settings').upsert({
+    const { error } = await supabase.from('user_settings').upsert(sanitizePayload('user_settings', {
       user_id: userId,
       device_id: settings.deviceId || 'client',
       pair_code: pairCode || null,
       user_email: myEmail || null,
       settings: sanitizedSettings,
       updated_at: Date.now(),
-    });
+    }));
 
     if (error) {
       console.warn('Error pushing settings:', error.message);
@@ -728,7 +781,7 @@ export async function fetchCloudData(customEmail?: string): Promise<{
 
     const remoteChecklist: Record<string, boolean> = {};
     if (Array.isArray(chkRes.data)) {
-      // Merge oldest → newest so newer day rows have the final word
+      // Merge oldest â†’ newest so newer day rows have the final word
       // (fetch is ordered created_at DESC; naive iteration let older rows clobber newer ones)
       chkRes.data
         .slice()
@@ -846,6 +899,9 @@ export async function flushOutboxQueue(): Promise<void> {
         success = await pushChecklistToCloud(item.payload.day, item.payload.items, { skipQueue: true });
       } else if (item.type === 'settings') {
         success = await pushSettingsToCloud(item.payload, { skipQueue: true });
+      } else if (item.type === 'backup') {
+        // Backup payloads carry their own 'data' envelope; retries are cheap
+        success = await pushAutoBackupToCloud(item.payload, { skipQueue: true });
       }
 
       if (success) {
@@ -868,7 +924,7 @@ export async function flushOutboxQueue(): Promise<void> {
     .filter((item) => {
       if (!succeededIds.has(item.id)) return true;
       // Race guard: if a *newer* payload for the same record was queued while we
-      // were flushing the stale snapshot, keep it — never drop fresh data.
+      // were flushing the stale snapshot, keep it â€” never drop fresh data.
       const pushedTime = pushedPayloadTimes.get(item.id) ?? 0;
       const freshTime = Number(item.payload?.updated_at) || item.addedAt;
       return freshTime > pushedTime;
@@ -966,7 +1022,7 @@ export async function syncAllLocalDataToCloud(userId: string): Promise<void> {
       await push(pushSettingsToCloud(settings));
     }
 
-    // Only mark migration complete when every push succeeded — a partial success
+    // Only mark migration complete when every push succeeded â€” a partial success
     // flag used to strand pre-login data forever on a mid-migration network drop.
     if (pushFailures === 0 && typeof window !== 'undefined') {
       localStorage.setItem(migrationKey, 'true');
@@ -977,3 +1033,5 @@ export async function syncAllLocalDataToCloud(userId: string): Promise<void> {
     console.warn('Initial data migration notice:', err);
   }
 }
+
+

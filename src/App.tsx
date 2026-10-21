@@ -32,6 +32,8 @@ import {
   exportAllDataJson,
   getActiveUserEmail,
   uid,
+  runNightlyAutoBackup,
+  buildBackupPayload,
 } from './lib/storage';
 import {
   computeStreak,
@@ -53,6 +55,7 @@ import {
   mergeWithLastWriteWins,
   flushOutboxQueue,
   syncAllLocalDataToCloud,
+  pushAutoBackupToCloud,
 } from './lib/cloudSync';
 import {
   broadcastMyState,
@@ -310,6 +313,45 @@ export default function App() {
     tryInitialSync();
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Nightly automatic backup: one rolling snapshot per study-day (localStorage,
+  // 7-day window) + a cloud copy queued through the outbox so it survives
+  // daylong outages. Runs on mount and re-checks hourly / on window focus.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let busy = false;
+    const tick = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const meta = runNightlyAutoBackup();
+        if (meta) {
+          // Re-build the payload (keys stripped) and ship it via the outbox
+          const payload = buildBackupPayload(true, false);
+          if (payload) {
+            await pushAutoBackupToCloud({
+              id: `backup-${meta.day}`,
+              data: payload,
+              takenAt: meta.takenAt,
+              deviceId: payload?.data?.settings?.deviceId,
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('[AutoBackup] failed:', err);
+      } finally {
+        busy = false;
+      }
+    };
+    tick();
+    const interval = window.setInterval(tick, 60 * 60 * 1000);
+    const onFocus = () => tick();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 
