@@ -30,7 +30,6 @@ import { StudyDistributionPieChart } from '../common/StudyDistributionPieChart';
 import { AppSettings, DailyPlan, Exam, MistakeCard, Session, ViewId } from '../../types';
 import { CoupleMemberState } from '../../lib/coupleSync';
 import { requestAppWakeLock, releaseAppWakeLock, isAppWakeLockActive } from '../../lib/wakeLock';
-import { ProactiveAiBanner } from '../common/ProactiveAiBanner';
 import { PoofyMascot } from '../common/PoofyMascot';
 
 interface TimerViewProps {
@@ -323,18 +322,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
         </div>
       )}
 
-      {/* Proactive Counselor Banner in Timer */}
-      {!isZenMode && settings && settings.ai.proactiveEnabled !== false && (
-        <ProactiveAiBanner
-          sessions={sessions}
-          exams={exams}
-          mistakes={mistakes}
-          plans={plans}
-          settings={settings}
-          onSavePlan={onSavePlan}
-          onNavigate={onNavigate}
-        />
-      )}
+
 
       {/* Subject Selector Bar with Tabs (hidden in Zen Mode) */}
       {!isZenMode && (

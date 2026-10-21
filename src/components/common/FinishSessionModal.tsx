@@ -27,6 +27,7 @@ interface FinishSessionModalProps {
   initialBook?: string;
   initialChapter?: string;
   initialGoftar?: string;
+  initialDay?: string;
 }
 
 export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
@@ -38,30 +39,33 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
   initialBook = 'all',
   initialChapter = '',
   initialGoftar = '',
+  initialDay,
 }) => {
   const [subject, setSubject] = useState(initialSubject);
   const [book, setBook] = useState(initialBook);
   const [chapter, setChapter] = useState(initialChapter);
   const [goftar, setGoftar] = useState(initialGoftar);
   const [type, setType] = useState('آموزش و مطالعه');
+  const [targetDay, setTargetDay] = useState<string>(() => initialDay || studyDayKey());
   const [correct, setCorrect] = useState<string>('0');
   const [wrong, setWrong] = useState<string>('0');
   const [blank, setBlank] = useState<string>('0');
   const [note, setNote] = useState('');
 
-  // Sync initial subject when opened
+  // Sync initial values when opened
   useEffect(() => {
     if (isOpen) {
       setSubject(initialSubject);
       setBook(initialBook || 'all');
       setChapter(initialChapter || '');
       setGoftar(initialGoftar || '');
+      setTargetDay(initialDay || studyDayKey());
       setCorrect('0');
       setWrong('0');
       setBlank('0');
       setNote('');
     }
-  }, [isOpen, initialSubject, initialBook, initialChapter, initialGoftar]);
+  }, [isOpen, initialSubject, initialBook, initialChapter, initialGoftar, initialDay]);
 
   if (!isOpen) return null;
 
@@ -80,7 +84,8 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const now = Date.now();
-    const day = studyDayKey();
+    // Attribute session to initialDay if timer was started yesterday or custom chosen day
+    const day = targetDay || initialDay || studyDayKey();
 
     // Combine chapter and goftar if applicable
     let finalChapter = chapter.trim();
@@ -156,6 +161,22 @@ export const FinishSessionModal: React.FC<FinishSessionModalProps> = ({
                 ({faNum(elapsedMinutes)} دقیقه)
               </span>
             </div>
+          </div>
+
+          {/* Day attribution badge (fixes yesterday timer issue) */}
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 flex items-center justify-between text-[11px]">
+            <span className="text-slate-700 dark:text-slate-300 font-bold">
+              تاریخ ثبت پارت: <span className="text-blue-600 dark:text-blue-400 font-mono font-black">{targetDay === studyDayKey() ? 'امروز' : 'دیروز (پارت دیشب)'}</span> ({targetDay})
+            </span>
+            {initialDay && initialDay !== studyDayKey() && (
+              <button
+                type="button"
+                onClick={() => setTargetDay((d) => (d === studyDayKey() ? initialDay : studyDayKey()))}
+                className="text-blue-600 dark:text-blue-400 font-extrabold hover:underline cursor-pointer"
+              >
+                {targetDay === studyDayKey() ? 'ثبت در دیروز' : 'ثبت در امروز'}
+              </button>
+            )}
           </div>
 
           {/* Subject Select */}

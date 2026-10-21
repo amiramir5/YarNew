@@ -15,7 +15,6 @@ ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS title text;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS total_questions integer;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS duration_minutes integer;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS percentage numeric(5,2);
-ALTER TABLE public.exams ALTER COLUMN title DROP NOT NULL;
 
 -- Backfill duration_minutes and percentage from existing duration and percent if null
 UPDATE public.exams SET duration_minutes = duration WHERE duration_minutes IS NULL AND duration IS NOT NULL;
@@ -41,11 +40,30 @@ ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS leitner_box integer;
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS image_url text;
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS day text;
 
--- Make sure legacy columns are not strict NOT NULL
-ALTER TABLE public.mistakes ALTER COLUMN topic DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN reason DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN lesson DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN day DROP NOT NULL;
+-- Make sure legacy columns are safely nullable without throwing on fresh databases
+DO $$
+BEGIN
+  BEGIN
+    ALTER TABLE public.exams ALTER COLUMN title DROP NOT NULL;
+  EXCEPTION WHEN undefined_column THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE public.mistakes ALTER COLUMN topic DROP NOT NULL;
+  EXCEPTION WHEN undefined_column THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE public.mistakes ALTER COLUMN reason DROP NOT NULL;
+  EXCEPTION WHEN undefined_column THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE public.mistakes ALTER COLUMN lesson DROP NOT NULL;
+  EXCEPTION WHEN undefined_column THEN NULL;
+  END;
+  BEGIN
+    ALTER TABLE public.mistakes ALTER COLUMN day DROP NOT NULL;
+  EXCEPTION WHEN undefined_column THEN NULL;
+  END;
+END $$;
 
 -- Backfill mistakes legacy columns
 UPDATE public.mistakes SET reason = cause WHERE (reason IS NULL OR reason = '') AND cause IS NOT NULL AND cause <> '';

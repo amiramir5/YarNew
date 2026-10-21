@@ -38,7 +38,28 @@ export const ProactiveAiBanner: React.FC<ProactiveAiBannerProps> = ({
   onSavePlan,
   onNavigate,
 }) => {
-  const [isDismissed, setIsDismissed] = useState(false);
+  const [isDismissed, setIsDismissed] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('ky_poofy_banner_dismissed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const handleDismiss = () => {
+    setIsDismissed(true);
+    try {
+      sessionStorage.setItem('ky_poofy_banner_dismissed', 'true');
+    } catch {}
+  };
+
+  const handleReopen = () => {
+    setIsDismissed(false);
+    try {
+      sessionStorage.removeItem('ky_poofy_banner_dismissed');
+    } catch {}
+  };
+
   const [scheduleModalOpen, setScheduleModalOpen] = useState(false);
   const [isGeneratingSchedule, setIsGeneratingSchedule] = useState(false);
   const [proposedSchedule, setProposedSchedule] = useState<ScheduleProposal | null>(null);
@@ -229,7 +250,7 @@ export const ProactiveAiBanner: React.FC<ProactiveAiBannerProps> = ({
     return (
       <div className="flex justify-end">
         <button
-          onClick={() => setIsDismissed(false)}
+          onClick={handleReopen}
           className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-2xl bg-white dark:bg-[#0c1c33] border border-blue-200 dark:border-blue-900 shadow-xs hover:shadow-md text-xs font-bold text-blue-700 dark:text-blue-300 transition-all cursor-pointer group"
           title="باز کردن پیام پوفی"
         >
@@ -291,7 +312,7 @@ export const ProactiveAiBanner: React.FC<ProactiveAiBannerProps> = ({
           </div>
 
           <button
-            onClick={() => setIsDismissed(true)}
+            onClick={handleDismiss}
             className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800 cursor-pointer shrink-0"
             title="بستن موقت"
           >

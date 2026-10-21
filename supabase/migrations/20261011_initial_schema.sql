@@ -8,16 +8,21 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ------------------------------------------------------------------------------
--- گام ۱: پاکسازی پویا و امن تمام پالیسی‌های قبلی و permissive
+-- گام ۱: پاکسازی پویا و امن تمام پالیسی‌های قبلی جداول اختصاصی برنامه
 -- ------------------------------------------------------------------------------
 DO $$
 DECLARE
   r record;
+  app_tables text[] := ARRAY[
+    'profiles', 'pairs', 'pair_members', 'couple_messages', 'couple_live_states',
+    'sessions', 'exams', 'mistakes', 'daily_plans', 'quick_notes', 'progress_entries',
+    'user_settings', 'user_checklists', 'study_resources'
+  ];
 BEGIN
   FOR r IN
     SELECT schemaname, tablename, policyname
     FROM pg_policies
-    WHERE schemaname = 'public'
+    WHERE (schemaname = 'public' AND tablename = ANY(app_tables))
        OR (schemaname = 'storage' AND tablename = 'objects' AND policyname IN ('Public Access for question-images', 'User Folder Storage Access'))
   LOOP
     EXECUTE format('DROP POLICY IF EXISTS %I ON %I.%I', r.policyname, r.schemaname, r.tablename);
@@ -41,13 +46,14 @@ CREATE TABLE IF NOT EXISTS public.pairs (
 ALTER TABLE public.pairs ADD COLUMN IF NOT EXISTS invite_code text UNIQUE;
 ALTER TABLE public.pairs ADD COLUMN IF NOT EXISTS expires_at timestamp with time zone DEFAULT (now() + interval '48 hours');
 
--- ۲. جدول اعضای زوج (Pair Members) با محدودیت یکتا بودن کاربر در هر زمان
+-- ۲. جدول اعضای زوج (Pair Members) با محدودیت یکتا بودن کاربر در هر زمان و نقش یکتا در هر اتاق
 CREATE TABLE IF NOT EXISTS public.pair_members (
   pair_code text NOT NULL REFERENCES public.pairs(pair_code) ON DELETE CASCADE,
   user_id uuid NOT NULL UNIQUE REFERENCES auth.users(id) ON DELETE CASCADE,
   role text NOT NULL CHECK (role IN ('husband', 'wife')),
   joined_at timestamp with time zone DEFAULT now(),
-  PRIMARY KEY (pair_code, user_id)
+  PRIMARY KEY (pair_code, user_id),
+  CONSTRAINT pair_members_pair_role_unique UNIQUE (pair_code, role)
 );
 
 DO $$
@@ -56,6 +62,11 @@ BEGIN
     SELECT 1 FROM pg_constraint WHERE conname = 'pair_members_user_id_unique'
   ) THEN
     ALTER TABLE public.pair_members ADD CONSTRAINT pair_members_user_id_unique UNIQUE (user_id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'pair_members_pair_role_unique'
+  ) THEN
+    ALTER TABLE public.pair_members ADD CONSTRAINT pair_members_pair_role_unique UNIQUE (pair_code, role);
   END IF;
 EXCEPTION WHEN OTHERS THEN NULL;
 END $$;
@@ -139,14 +150,21 @@ CREATE TABLE IF NOT EXISTS public.exams (
   blank integer NOT NULL DEFAULT 0,
   duration integer NOT NULL DEFAULT 0,
   percent numeric(5,2) NOT NULL DEFAULT 0,
-  note text DEFAULT ''
+  note text DEFAULT '',
+  title text,
+  total_questions integer,
+  duration_minutes integer,
+  percentage numeric(5,2)
 );
 
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS duration integer DEFAULT 0;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS percent numeric(5,2) DEFAULT 0;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS pair_code text;
 ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS note text DEFAULT '';
-ALTER TABLE public.exams ALTER COLUMN title DROP NOT NULL;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS title text;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS total_questions integer;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS duration_minutes integer;
+ALTER TABLE public.exams ADD COLUMN IF NOT EXISTS percentage numeric(5,2);
 
 -- ۷. جدول تحلیل اشتباهات آزمون و لایتنر (Mistakes) - منطبق ۱۰۰٪ با MistakeCard در types/index.ts
 CREATE TABLE IF NOT EXISTS public.mistakes (
@@ -167,7 +185,14 @@ CREATE TABLE IF NOT EXISTS public.mistakes (
   image_data text,
   box integer NOT NULL DEFAULT 1,
   next_review text NOT NULL DEFAULT '',
-  history jsonb DEFAULT '[]'::jsonb
+  history jsonb DEFAULT '[]'::jsonb,
+  question_number text,
+  topic text,
+  reason text,
+  lesson text,
+  leitner_box integer,
+  image_url text,
+  day text
 );
 
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS pair_code text;
@@ -180,10 +205,13 @@ ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS image_data text;
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS box integer DEFAULT 1;
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS next_review text DEFAULT '';
 ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS history jsonb DEFAULT '[]'::jsonb;
-ALTER TABLE public.mistakes ALTER COLUMN topic DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN reason DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN lesson DROP NOT NULL;
-ALTER TABLE public.mistakes ALTER COLUMN day DROP NOT NULL;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS question_number text;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS topic text;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS reason text;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS lesson text;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS leitner_box integer;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS image_url text;
+ALTER TABLE public.mistakes ADD COLUMN IF NOT EXISTS day text;
 
 -- ۸. جدول برنامه‌ریزی روزانه (Daily Plans)
 CREATE TABLE IF NOT EXISTS public.daily_plans (
@@ -493,7 +521,8 @@ BEGIN
 
   SELECT * INTO v_pair
   FROM public.pairs
-  WHERE upper(trim(invite_code)) = p_invite_code;
+  WHERE upper(trim(invite_code)) = p_invite_code
+  FOR UPDATE;
 
   IF NOT FOUND THEN
     RAISE EXCEPTION 'کد دعوت نامعتبر است یا وجود ندارد.';

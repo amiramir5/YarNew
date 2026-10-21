@@ -1,7 +1,12 @@
-// Script to validate that all cloudSync payload keys exist as columns in supabase_schema.sql
+// Script to validate that all cloudSync payload keys exist as columns in canonical migrations
 import fs from 'fs';
+import path from 'path';
 
-const sql = fs.readFileSync('./supabase_schema.sql', 'utf8');
+const migration1 = fs.readFileSync(path.resolve('supabase/migrations/20261011_initial_schema.sql'), 'utf8');
+const migration2 = fs.existsSync(path.resolve('supabase/migrations/20261012_consolidated_repair.sql'))
+  ? fs.readFileSync(path.resolve('supabase/migrations/20261012_consolidated_repair.sql'), 'utf8')
+  : '';
+const sql = migration1 + '\n\n' + migration2;
 
 // Parse CREATE TABLE statements and ALTER TABLE ADD COLUMN statements
 const tableColumns = {};

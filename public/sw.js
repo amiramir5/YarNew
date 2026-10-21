@@ -34,11 +34,13 @@ self.addEventListener('activate', (event) => {
 });
 
 self.addEventListener('fetch', (event) => {
-  // Only handle GET requests and skip Supabase / external API calls
+  // Only handle GET requests and skip Supabase / external AI API calls
   if (
     event.request.method !== 'GET' ||
+    !event.request.url.startsWith('http') ||
     event.request.url.includes('/api/') ||
     event.request.url.includes('supabase.co') ||
+    event.request.url.includes('openrouter.ai') ||
     event.request.url.includes('generativelanguage.googleapis.com')
   ) {
     return;

@@ -471,15 +471,28 @@ export const AIView: React.FC<AIViewProps> = ({
     }
   };
 
-  // Download slides as HTML
+  // Download slides as HTML (Safe with strict HTML escaping & sanitized filename)
   const handleDownloadSlidesHtml = () => {
     if (!slidesResult) return;
+
+    const escapeHtml = (unsafe: any) =>
+      String(unsafe ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+
+    const safeTitle = escapeHtml(slidesResult.deck_title);
+    const safeFilename = String(slidesResult.deck_title ?? 'deck')
+      .replace(/[^a-zA-Z0-9_\u0600-\u06FF-]/g, '_')
+      .slice(0, 50);
 
     const html = `<!DOCTYPE html>
 <html lang="fa" dir="rtl">
 <head>
   <meta charset="utf-8">
-  <title>${slidesResult.deck_title}</title>
+  <title>${safeTitle}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f172a; color: #fff; padding: 2rem; margin: 0; }
     .slide { background: #1e293b; border-radius: 1.5rem; padding: 3rem; margin-bottom: 2rem; box-shadow: 0 10px 25px rgba(0,0,0,0.3); border: 1px solid #334155; }
@@ -490,16 +503,16 @@ export const AIView: React.FC<AIViewProps> = ({
   </style>
 </head>
 <body>
-  <h1>${slidesResult.deck_title}</h1>
+  <h1>${safeTitle}</h1>
   ${slidesResult.slides
     .map(
       (s, idx) => `
     <div class="slide">
-      <h2>اسلاید ${idx + 1}: ${s.title}</h2>
+      <h2>اسلاید ${idx + 1}: ${escapeHtml(s.title)}</h2>
       <ul>
-        ${s.bullets.map((b) => `<li>${b}</li>`).join('')}
+        ${s.bullets.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}
       </ul>
-      ${s.image_prompt ? `<div class="image-prompt">نمودار پیشنهادی: ${s.image_prompt}</div>` : ''}
+      ${s.image_prompt ? `<div class="image-prompt">نمودار پیشنهادی: ${escapeHtml(s.image_prompt)}</div>` : ''}
     </div>
   `
     )
@@ -511,7 +524,7 @@ export const AIView: React.FC<AIViewProps> = ({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `slides-${slidesResult.deck_title}.html`;
+    a.download = `slides-${safeFilename}.html`;
     document.body.appendChild(a);
     a.click();
     a.remove();

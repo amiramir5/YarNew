@@ -4,13 +4,15 @@ import {
   ArrowRight,
   Sparkles,
   BookOpen,
-  Calendar,
   Layers,
-  MessageCircle,
-  HelpCircle,
-  Send,
   Volume2,
   VolumeX,
+  Settings2,
+  Minimize2,
+  Maximize2,
+  Compass,
+  CheckCircle2,
+  Flame,
 } from 'lucide-react';
 import { Session, AppSettings, MistakeCard, ViewId } from '../../types';
 import { studyDayKey, faNum } from '../../lib/jalali';
@@ -24,6 +26,7 @@ interface ProactiveFloatingWidgetProps {
   isTimerRunning: boolean;
   activeSubject: string;
   onNavigate: (view: ViewId) => void;
+  onUpdateSettings?: (settings: AppSettings) => void;
 }
 
 export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = ({
@@ -33,11 +36,24 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
   isTimerRunning,
   activeSubject,
   onNavigate,
+  onUpdateSettings,
 }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-  const [isVoluntaryBubbleVisible, setIsVoluntaryBubbleVisible] = useState(true);
-  const [isMutedForSession, setIsMutedForSession] = useState(false);
-  const lastThoughtKeyRef = useRef<string>('');
+  const [isHovered, setIsHovered] = useState(false);
+  const [milestoneToast, setMilestoneToast] = useState<{
+    id: string;
+    text: string;
+    mood: PoofyMood;
+  } | null>(null);
+
+  // Minimized micro-state for students who want maximum screen space
+  const [isMinimized, setIsMinimized] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('ky_poofy_minimized') === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   const today = studyDayKey();
   const todaySessions = useMemo(() => sessions.filter((s) => !s.deleted_at && s.day === today), [sessions, today]);
@@ -75,6 +91,10 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
     return { g12, base };
   }, [sessions]);
 
+  // Mode and position from settings
+  const poofyMode = settings.ai.poofyMode || 'dynamic';
+  const poofyPosition = settings.ai.poofyPosition || 'left';
+
   // Dynamic intelligent voluntary thought of Poofy
   const thought = useMemo<{
     key: string;
@@ -94,21 +114,45 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
       };
     }
 
-    // 1. Single subject skew warning
+    // 1. Goal reached celebration
+    if (todayMinutes >= (settings.dailyGoalMinutes || 600)) {
+      return {
+        key: 'goal_reached',
+        text: `ایول! هدف امروز تیک خورد! فوق‌العاده بودی 🌟`,
+        detail: `مجموعاً ${faNum(todayMinutes)} دقیقه مطالعه مفید ثبت کردی و به تارگت روزانه رسیدی. حالا وقت استراحته یا یک مرور فوق سبک!`,
+        mood: 'happy',
+        actionLabel: 'مشاهده آمار کامل',
+        actionView: 'stats',
+      };
+    }
+
+    // 2. Due cards in Leitner
+    if (dueMistakesCount >= 3) {
+      return {
+        key: `leitner_${dueMistakesCount}`,
+        text: `${faNum(dueMistakesCount)} تست منتظر مرور لایتنره! نذار فراموش بشن ⚡`,
+        detail: `تست‌های اشتباه خورده قبلی موعد امروزشون فرا رسیده. فقط ۵ دقیقه وقت بذار و مرورشون کن تا توی حافظه بلندمدت حک بشن.`,
+        mood: 'curious',
+        actionLabel: 'ورود به لایتنر',
+        actionView: 'mistakes',
+      };
+    }
+
+    // 3. Single subject skew warning
     const subjKeys = Object.keys(todaySubjectMinutes);
     if (todayMinutes >= 90 && subjKeys.length === 1) {
       const s = getSubject(subjKeys[0]);
       return {
         key: `single_subj_${subjKeys[0]}`,
-        text: `امروز تا الان تماماً ${s.name} خوندی! مغزت خسته نشه؟ یه پارت درس دیگه بذار 💡`,
-        detail: `بیش از ۹۰ دقیقه متوالی فقط ${s.name} ثبت شده. برای یادگیری پایدار و جلوگیری از فرسودگی، پارت بعدی رو به یک درس اختصاصی دیگه مثل شیمی یا فیزیک بده.`,
+        text: `امروز تا الان فقط ${s.name} خوندی! برای تنوع ذهن، پارت بعد رو تغییر بده 💡`,
+        detail: `بیش از ۹۰ دقیقه متوالی فقط ${s.name} ثبت شده. برای یادگیری پایدار و جلوگیری از فرسودگی، پارت بعدی رو به یک درس دیگه اختصاص بده.`,
         mood: 'worried',
         actionLabel: 'تغییر درس در تایمر',
         actionView: 'timer',
       };
     }
 
-    // 2. Grade 12 bias vs Base grades
+    // 4. Grade 12 bias vs Base grades
     if (gradeStats.g12 > 0 && gradeStats.base === 0 && sessions.length >= 6) {
       return {
         key: 'grade_bias',
@@ -120,34 +164,12 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
       };
     }
 
-    // 3. Due cards in Leitner
-    if (dueMistakesCount >= 3) {
-      return {
-        key: `leitner_${dueMistakesCount}`,
-        text: `${faNum(dueMistakesCount)} کارت تست منتظر مرور لایتنره! نذار فراموش بشن ⚡`,
-        detail: `تست‌های اشتباه خورده قبلی موعد امروزشون فرا رسیده. فقط ۵ دقیقه وقت بذار و مرورشون کن تا توی حافظه بلندمدت حک بشن.`,
-        mood: 'curious',
-        actionLabel: 'ورود به لایتنر',
-        actionView: 'mistakes',
-      };
-    }
-
-    // 4. Goal reached celebration
-    if (todayMinutes >= (settings.dailyGoalMinutes || 600)) {
-      return {
-        key: 'goal_reached',
-        text: `ایول! هدف امروز تیک خورد! فوق‌العاده بودی 🌟`,
-        detail: `مجموعاً ${faNum(todayMinutes)} دقیقه مطالعه مفید ثبت کردی و به تارگت روزانه رسیدی. حالا وقت استراحته یا یک مرور فوق سبک!`,
-        mood: 'happy',
-      };
-    }
-
     // 5. No study session yet
     if (todayMinutes === 0) {
       return {
         key: 'start_day',
-        text: `سلام رفیق! هنوز تایمر رو روشن نکردی، با یه پارت ۴۵ دقیقه‌ای شروع کنیم؟ 🚀`,
-        detail: `شروع کردن سخت‌ترین بخشه! همین الان یک تایمر سبک راه بنداز و اولین پارت روزت رو شکار کن.`,
+        text: `سلام رفیق! برای اولین پارت مطالعه آماده‌ای؟ بریم بترکونیم 🚀`,
+        detail: `شروع کردن مهم‌ترین قدمه! همین الان یک تایمر سبک راه بنداز و اولین پارت روزت رو شکار کن.`,
         mood: 'idle',
         actionLabel: 'روشن کردن تایمر',
         actionView: 'timer',
@@ -155,8 +177,8 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
     }
 
     return {
-      key: `progress_${todayMinutes}`,
-      text: `تا الان ${faNum(todayMinutes)} دقیقه خوندی، پرانرژی ادامه بده! ☕`,
+      key: 'general_progress',
+      text: `تا الان ${faNum(todayMinutes)} دقیقه مطالعه ثبت شده؛ پرانرژی ادامه بده! ☕`,
       detail: `روندت رو به پیشرفته! برای تراز عالی آزمون‌های آزمایشی، تعادل تستی و مفهومی رو حفظ کن.`,
       mood: 'happy',
       actionLabel: 'مشاهده آمار',
@@ -164,127 +186,155 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
     };
   }, [isTimerRunning, activeSubject, todaySubjectMinutes, todayMinutes, gradeStats, sessions.length, dueMistakesCount, settings.dailyGoalMinutes]);
 
-  // When thought changes, voluntarily pop open the speech bubble!
+  // Gentle milestone celebration (auto-dismissing toast after 5s, NEVER looping on normal ticks)
   useEffect(() => {
-    if (thought.key !== lastThoughtKeyRef.current) {
-      lastThoughtKeyRef.current = thought.key;
-      if (!isMutedForSession) {
-        setIsVoluntaryBubbleVisible(true);
-      }
-    }
-  }, [thought.key, isMutedForSession]);
+    if (poofyMode === 'quiet' || poofyMode === 'hidden' || isTimerRunning) return;
 
-  if (isMutedForSession) {
-    return (
-      <div className="fixed bottom-24 left-4 sm:left-6 z-60">
-        <button
-          onClick={() => setIsMutedForSession(false)}
-          className="p-2 rounded-full bg-white dark:bg-[#0b172a] border border-blue-200 dark:border-blue-900 shadow-md text-blue-600 dark:text-blue-400 hover:scale-110 transition-transform cursor-pointer"
-          title="نمایش مجدد پوفی"
-        >
-          <PoofyMascot mood="idle" size="xs" />
-        </button>
-      </div>
-    );
+    // Check if daily goal reached milestone should fire once today
+    if (todayMinutes >= (settings.dailyGoalMinutes || 600)) {
+      const milestoneKey = `ky_milestone_goal_${today}`;
+      try {
+        if (!sessionStorage.getItem(milestoneKey)) {
+          sessionStorage.setItem(milestoneKey, 'true');
+          setMilestoneToast({
+            id: milestoneKey,
+            text: 'ایول قهرمان! تارگت مطالعه امروز تکمیل شد 🌟',
+            mood: 'happy',
+          });
+          const timer = setTimeout(() => setMilestoneToast(null), 5000);
+          return () => clearTimeout(timer);
+        }
+      } catch {}
+    }
+  }, [todayMinutes, settings.dailyGoalMinutes, today, poofyMode, isTimerRunning]);
+
+  const toggleMinimize = (min: boolean) => {
+    setIsMinimized(min);
+    try {
+      if (min) sessionStorage.setItem('ky_poofy_minimized', 'true');
+      else sessionStorage.removeItem('ky_poofy_minimized');
+    } catch {}
+  };
+
+  const handleUpdateMode = (mode: 'dynamic' | 'quiet' | 'hidden') => {
+    if (!onUpdateSettings) return;
+    onUpdateSettings({
+      ...settings,
+      ai: {
+        ...settings.ai,
+        poofyMode: mode,
+      },
+    });
+  };
+
+  const handleUpdatePosition = (pos: 'left' | 'right') => {
+    if (!onUpdateSettings) return;
+    onUpdateSettings({
+      ...settings,
+      ai: {
+        ...settings.ai,
+        poofyPosition: pos,
+      },
+    });
+  };
+
+  // If user disabled Poofy or hidden
+  if (poofyMode === 'hidden') {
+    return null;
   }
 
+  // Positioning classes
+  const positionClass =
+    poofyPosition === 'right'
+      ? 'right-4 sm:right-6 items-end'
+      : 'left-4 sm:left-6 items-start';
+
+  // Floating Micro-Toast (Gentle auto-toast for milestones or user curiosity)
+  const showToast = milestoneToast && !isDrawerOpen;
+
   return (
-    <div className="fixed bottom-24 left-4 sm:left-6 z-60 flex flex-col items-start select-none font-sans">
-      {/* Voluntary Speech Balloon (حباب گفت‌وگوی خودکار پوفی) */}
-      {isVoluntaryBubbleVisible && !isDrawerOpen && (
-        <div className="mb-2 max-w-[270px] sm:max-w-xs p-3 rounded-2xl bg-white dark:bg-[#0c1e38] text-slate-800 dark:text-slate-100 border border-blue-200 dark:border-blue-900 shadow-xl shadow-blue-500/10 text-right animate-in fade-in zoom-in-95 duration-200 relative">
-          {/* Close & Mute Controls */}
+    <div
+      className={`fixed bottom-20 sm:bottom-24 z-50 flex flex-col ${positionClass} select-none font-sans transition-all duration-300 pointer-events-none`}
+    >
+      {/* 1. Milestone Gentle Toast (Auto-dismisses in 5s, non-intrusive) */}
+      {showToast && (
+        <div className="mb-2 max-w-[260px] sm:max-w-xs p-3 rounded-2xl bg-white/95 dark:bg-[#0c1e38]/95 backdrop-blur-md text-slate-800 dark:text-slate-100 border border-blue-200 dark:border-blue-900 shadow-xl shadow-blue-500/10 text-right animate-in fade-in slide-in-from-bottom-2 duration-200 pointer-events-auto">
           <div className="flex items-center justify-between pb-1 mb-1 border-b border-slate-100 dark:border-slate-800 text-[10px] text-slate-400">
             <span className="font-extrabold text-blue-600 dark:text-blue-400 flex items-center gap-1">
-              <span>پوفی (همراه هوشمند)</span>
+              <span>پوفی</span>
             </span>
             <button
               type="button"
-              onClick={() => setIsVoluntaryBubbleVisible(false)}
+              onClick={() => setMilestoneToast(null)}
               className="p-0.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-              title="بستن حباب پیام"
+              title="بستن پیام"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
-
-          <p className="text-xs leading-relaxed font-bold text-slate-800 dark:text-slate-100">
-            {thought.text}
-          </p>
-
-          {/* Action Button inside Balloon */}
-          {thought.actionLabel && thought.actionView && (
-            <div className="mt-2 pt-1.5 flex items-center justify-between border-t border-slate-100 dark:border-slate-800/80">
-              <button
-                type="button"
-                onClick={() => {
-                  setIsVoluntaryBubbleVisible(false);
-                  onNavigate(thought.actionView!);
-                }}
-                className="px-2.5 py-1 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-extrabold transition-all cursor-pointer flex items-center gap-1"
-              >
-                <span>{thought.actionLabel}</span>
-                <ArrowRight className="w-3 h-3 rotate-180" />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setIsVoluntaryBubbleVisible(false);
-                  setIsDrawerOpen(true);
-                }}
-                className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline font-bold cursor-pointer"
-              >
-                بیشتر بدانید
-              </button>
-            </div>
-          )}
-
-          {/* Speech Bubble Arrow pointing to Poofy Mascot */}
-          <div className="absolute -bottom-1.5 left-6 w-3 h-3 bg-white dark:bg-[#0c1e38] border-r border-b border-blue-200 dark:border-blue-900 rotate-45" />
+          <p className="text-xs font-bold leading-relaxed">{milestoneToast.text}</p>
         </div>
       )}
 
-      {/* Expanded Interactive Dialogue Card */}
+      {/* 2. Interactive Companion Dialogue Card (Opens ONLY when user clicks Poofy) */}
       {isDrawerOpen && (
-        <div className="mb-2 w-76 sm:w-84 p-4 rounded-3xl bg-white dark:bg-[#0b172a] border border-blue-200 dark:border-blue-900 shadow-2xl space-y-3.5 text-right animate-in fade-in zoom-in-95 duration-200">
+        <div className="mb-2 w-76 sm:w-84 p-4 rounded-3xl bg-white/95 dark:bg-[#0b172a]/95 backdrop-blur-md border border-blue-200 dark:border-blue-900 shadow-2xl space-y-3 text-right animate-in fade-in zoom-in-95 duration-200 pointer-events-auto">
+          {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
               <PoofyMascot mood={thought.mood} size="sm" />
               <div>
-                <h4 className="text-xs font-black text-slate-900 dark:text-white">
-                  مشاوره همراه پوفی
+                <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1">
+                  <span>پوفی - همراه هوشمند کنکور</span>
                 </h4>
                 <span className="text-[10px] text-blue-600 dark:text-blue-400 font-bold">
-                  تحلیل زنده عملکرد شما
+                  {isTimerRunning ? 'تمرکز عمیق روی مطالعه' : 'تحلیل زنده ریتم درس‌خواندن'}
                 </span>
               </div>
             </div>
             <button
               onClick={() => setIsDrawerOpen(false)}
               className="p-1 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              title="بستن"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div className="p-3 rounded-2xl bg-blue-50/60 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/60">
-            <p className="text-xs text-slate-700 dark:text-slate-200 leading-relaxed font-medium">
+          {/* Dynamic Insight Bubble */}
+          <div className="p-3 rounded-2xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/60">
+            <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-relaxed">
+              {thought.text}
+            </p>
+            <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
               {thought.detail}
             </p>
           </div>
 
           {/* Quick Shortcuts */}
           <div className="grid grid-cols-2 gap-2 text-xs font-bold">
+            {thought.actionLabel && thought.actionView ? (
+              <button
+                onClick={() => {
+                  setIsDrawerOpen(false);
+                  onNavigate(thought.actionView!);
+                }}
+                className="col-span-2 p-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+              >
+                <span>{thought.actionLabel}</span>
+                <ArrowRight className="w-3.5 h-3.5 rotate-180" />
+              </button>
+            ) : null}
+
             <button
               onClick={() => {
                 setIsDrawerOpen(false);
                 onNavigate('ai');
               }}
-              className="p-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950 text-slate-800 dark:text-slate-200 transition-colors cursor-pointer flex items-center justify-center gap-1.5 text-[11px]"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>مشاور تخصصی</span>
+              <Sparkles className="w-3.5 h-3.5 text-blue-600" />
+              <span>مشاور هوشمند</span>
             </button>
 
             <button
@@ -292,45 +342,125 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
                 setIsDrawerOpen(false);
                 onNavigate('timer');
               }}
-              className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950 text-slate-800 dark:text-slate-200 transition-colors cursor-pointer flex items-center justify-center gap-1.5 text-[11px]"
             >
-              <BookOpen className="w-3.5 h-3.5" />
+              <BookOpen className="w-3.5 h-3.5 text-blue-600" />
               <span>ورود به تایمر</span>
             </button>
           </div>
 
-          <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-800 text-[10px] text-slate-400">
-            <span>مطالعه امروز: {faNum(todayMinutes)} دقیقه</span>
+          {/* Preferences Row (Position & Mode) */}
+          <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[10px] text-slate-500">
+            {/* Mode switch */}
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => handleUpdateMode(poofyMode === 'dynamic' ? 'quiet' : 'dynamic')}
+                className={`px-2 py-0.5 rounded-lg border cursor-pointer transition-colors ${
+                  poofyMode === 'dynamic'
+                    ? 'bg-blue-50 dark:bg-blue-950 border-blue-200 text-blue-600 dark:text-blue-400 font-bold'
+                    : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-500'
+                }`}
+                title={poofyMode === 'dynamic' ? 'حالت فعال و پویا' : 'حالت آرام و ساکت'}
+              >
+                {poofyMode === 'dynamic' ? '🌟 پویا و فعال' : '🧘 آرام و بی‌صدا'}
+              </button>
+
+              {/* Position toggle */}
+              <button
+                type="button"
+                onClick={() => handleUpdatePosition(poofyPosition === 'left' ? 'right' : 'left')}
+                className="px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 cursor-pointer"
+                title="تغییر جهت قرارگیری پوفی"
+              >
+                {poofyPosition === 'left' ? 'جا: چپ' : 'جا: راست'}
+              </button>
+            </div>
+
+            {/* Minimize button */}
             <button
-              onClick={() => setIsMutedForSession(true)}
-              className="hover:text-rose-500 cursor-pointer"
+              type="button"
+              onClick={() => {
+                setIsDrawerOpen(false);
+                toggleMinimize(true);
+              }}
+              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer flex items-center gap-0.5"
+              title="مینی‌کردن پوفی"
             >
-              مخفی‌سازی پوفی
+              <Minimize2 className="w-3 h-3" />
+              <span>مینی</span>
             </button>
           </div>
         </div>
       )}
 
-      {/* The Fluffy Mascot Character Button */}
-      <div className="relative group">
-        <PoofyMascot
-          mood={thought.mood}
-          size="md"
-          onClick={() => {
-            if (isVoluntaryBubbleVisible) {
-              setIsVoluntaryBubbleVisible(false);
-              setIsDrawerOpen(true);
-            } else {
-              setIsDrawerOpen(!isDrawerOpen);
-            }
-          }}
-        />
+      {/* 3. The Mascot Character Anchor */}
+      {isMinimized ? (
+        /* Minimized micro-avatar */
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          <button
+            onClick={() => toggleMinimize(false)}
+            className="p-1.5 rounded-2xl bg-white/90 dark:bg-[#0b172a]/90 backdrop-blur-md border border-blue-200 dark:border-blue-900 shadow-md text-blue-600 dark:text-blue-400 hover:scale-110 transition-all cursor-pointer flex items-center gap-1 group"
+            title="بزرگ‌نمایی پوفی"
+          >
+            <PoofyMascot mood={thought.mood} size="xs" />
+            <span className="text-[10px] font-black text-slate-600 dark:text-slate-300 pl-1">
+              پوفی
+            </span>
+          </button>
+        </div>
+      ) : (
+        /* Standard Living Mascot */
+        <div
+          className="relative pointer-events-auto flex items-center gap-2"
+          onMouseEnter={() => setIsHovered(true)}
+          onMouseLeave={() => setIsHovered(false)}
+        >
+          {/* Gentle Status Tag when Timer is Running or Hovered */}
+          {isTimerRunning && (
+            <div className="animate-in fade-in zoom-in-95 duration-200 px-2.5 py-1 rounded-full bg-emerald-50/90 dark:bg-emerald-950/80 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-[10px] font-black shadow-xs flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <span>مطالعه {getSubject(activeSubject).name}</span>
+            </div>
+          )}
 
-        {/* Unread / Active Ping Indicator */}
-        {isVoluntaryBubbleVisible && (
-          <span className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full bg-rose-500 ring-2 ring-white dark:ring-slate-900 animate-pulse pointer-events-none" />
-        )}
-      </div>
+          {/* Hover Tooltip (Cute & friendly micro-reaction) */}
+          {!isTimerRunning && isHovered && !isDrawerOpen && (
+            <div className="animate-in fade-in slide-in-from-bottom-1 duration-150 px-2.5 py-1 rounded-full bg-white/95 dark:bg-[#0c1e38]/95 border border-blue-200 dark:border-blue-900 shadow-md text-slate-800 dark:text-slate-100 text-[10px] font-bold">
+              <span>{todayMinutes > 0 ? `مطالعه امروز: ${faNum(todayMinutes)} دقیقه ✨` : 'سلام! آماده‌ای؟ 🚀'}</span>
+            </div>
+          )}
+
+          {/* Mascot Character with Click Trigger */}
+          <div className="relative cursor-pointer group">
+            <PoofyMascot
+              mood={isTimerRunning ? 'focus' : thought.mood}
+              size="md"
+              onClick={() => {
+                setMilestoneToast(null);
+                setIsDrawerOpen(!isDrawerOpen);
+              }}
+            />
+
+            {/* Due Leitner Badge */}
+            {dueMistakesCount > 0 && !isTimerRunning && (
+              <span
+                className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-blue-600 text-white text-[9px] font-black shadow-xs pointer-events-none"
+                title={`${dueMistakesCount} تست منتظر مرور`}
+              >
+                {faNum(dueMistakesCount)}
+              </span>
+            )}
+
+            {/* Daily Goal Completed Star */}
+            {todayMinutes >= (settings.dailyGoalMinutes || 600) && !isTimerRunning && (
+              <span className="absolute -top-1 -left-1 w-4 h-4 rounded-full bg-amber-400 text-amber-950 text-[10px] flex items-center justify-center font-black shadow-xs pointer-events-none animate-bounce">
+                ★
+              </span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -184,6 +184,8 @@ export interface AppSettings {
     openrouterKey?: string;
     openrouterModel?: string;
     proactiveEnabled?: boolean;
+    poofyMode?: 'dynamic' | 'quiet' | 'hidden';
+    poofyPosition?: 'left' | 'right';
   };
   partnerLinkBackup?: {
     partner_id: string;

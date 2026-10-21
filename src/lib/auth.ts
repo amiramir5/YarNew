@@ -6,6 +6,7 @@ import {
   fetchMyPairStatus,
   DEFAULT_HUSBAND_NAME,
 } from './coupleSync';
+import { clearAccountOutbox } from './cloudSync';
 
 export interface AuthState {
   user: User | null;
@@ -495,10 +496,17 @@ export async function signOutUser(): Promise<void> {
     console.warn('Sign out error:', err);
   }
 
+  const previousEmail = globalAuthState.email;
   globalAuthState.user = null;
   globalAuthState.session = null;
   globalAuthState.email = null;
   localStorage.removeItem(AUTH_PERSIST_KEY);
+
+  // Clear pending outbox queue for the signed-out account to prevent cross-account leak
+  try {
+    clearAccountOutbox(previousEmail || undefined);
+  } catch {}
+
   notifyListeners();
 }
 

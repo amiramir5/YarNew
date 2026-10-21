@@ -60,6 +60,8 @@ export function getDefaultSettings(): AppSettings {
       geminiKey: '',
       geminiModel: 'gemini-3.5-flash',
       proactiveEnabled: true,
+      poofyMode: 'dynamic',
+      poofyPosition: 'left',
     },
   };
 }
@@ -104,24 +106,26 @@ export function setStored<T>(key: string, value: T): void {
   if (typeof window === 'undefined') return;
   try {
     localStorage.setItem(key, JSON.stringify(value));
-  } catch (err) {
-    console.warn(`Error writing key ${key}:`, err);
+  } catch (err: any) {
+    if (err && (err.name === 'QuotaExceededError' || err.code === 22 || err.number === -2147024882)) {
+      console.warn(`[Storage] Quota exceeded writing key ${key}. Suppressing crash and retaining state.`);
+    } else {
+      console.warn(`Error writing key ${key}:`, err);
+    }
   }
 }
 
-// Specific Getters & Setters with User Scoping
+// Specific Getters & Setters with User Scoping and Pre-Login Migration
 export function loadSessions(customEmail?: string): Session[] {
   const scopedKey = getUserScopedKey(STORAGE_KEYS.SESSIONS, customEmail);
   const data = getStored<Session[]>(scopedKey, []);
   if (data.length > 0) return data;
 
-  // Only fallback to legacy key if user has NO email configured at all (anonymous local user)
-  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email) {
-    const legacy = getStored<Session[]>(STORAGE_KEYS.SESSIONS, []);
-    if (legacy.length > 0) {
-      return legacy;
-    }
+  // Fallback to legacy unscoped key if available, and auto-migrate to scoped key
+  const legacy = getStored<Session[]>(STORAGE_KEYS.SESSIONS, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
   }
   return [];
 }
@@ -135,12 +139,10 @@ export function loadExams(customEmail?: string): Exam[] {
   const data = getStored<Exam[]>(scopedKey, []);
   if (data.length > 0) return data;
 
-  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email) {
-    const legacy = getStored<Exam[]>(STORAGE_KEYS.EXAMS, []);
-    if (legacy.length > 0) {
-      return legacy;
-    }
+  const legacy = getStored<Exam[]>(STORAGE_KEYS.EXAMS, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
   }
   return [];
 }
@@ -154,12 +156,10 @@ export function loadMistakes(customEmail?: string): MistakeCard[] {
   const data = getStored<MistakeCard[]>(scopedKey, []);
   if (data.length > 0) return data;
 
-  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email) {
-    const legacy = getStored<MistakeCard[]>(STORAGE_KEYS.MISTAKES, []);
-    if (legacy.length > 0) {
-      return legacy;
-    }
+  const legacy = getStored<MistakeCard[]>(STORAGE_KEYS.MISTAKES, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
   }
   return [];
 }
@@ -173,12 +173,10 @@ export function loadPlans(customEmail?: string): DailyPlan[] {
   const data = getStored<DailyPlan[]>(scopedKey, []);
   if (data.length > 0) return data;
 
-  const email = customEmail !== undefined ? customEmail.toLowerCase() : getActiveUserEmail();
-  if (!email) {
-    const legacy = getStored<DailyPlan[]>(STORAGE_KEYS.PLANS, []);
-    if (legacy.length > 0) {
-      return legacy;
-    }
+  const legacy = getStored<DailyPlan[]>(STORAGE_KEYS.PLANS, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
   }
   return [];
 }
@@ -189,7 +187,15 @@ export function savePlans(plans: DailyPlan[], customEmail?: string): void {
 
 export function loadNotes(customEmail?: string): QuickNote[] {
   const scopedKey = getUserScopedKey(STORAGE_KEYS.NOTES, customEmail);
-  return getStored<QuickNote[]>(scopedKey, []);
+  const data = getStored<QuickNote[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  const legacy = getStored<QuickNote[]>(STORAGE_KEYS.NOTES, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
+  }
+  return [];
 }
 export function saveNotes(notes: QuickNote[], customEmail?: string): void {
   const scopedKey = getUserScopedKey(STORAGE_KEYS.NOTES, customEmail);
@@ -198,16 +204,31 @@ export function saveNotes(notes: QuickNote[], customEmail?: string): void {
 
 export function loadProgress(customEmail?: string): ProgressEntry[] {
   const scopedKey = getUserScopedKey(STORAGE_KEYS.PROGRESS, customEmail);
-  return getStored<ProgressEntry[]>(scopedKey, []);
+  const data = getStored<ProgressEntry[]>(scopedKey, []);
+  if (data.length > 0) return data;
+
+  const legacy = getStored<ProgressEntry[]>(STORAGE_KEYS.PROGRESS, []);
+  if (legacy.length > 0) {
+    setStored(scopedKey, legacy);
+    return legacy;
+  }
+  return [];
 }
 export function saveProgress(progress: ProgressEntry[], customEmail?: string): void {
   const scopedKey = getUserScopedKey(STORAGE_KEYS.PROGRESS, customEmail);
   setStored(scopedKey, progress);
 }
 
-export function loadSettings(): AppSettings {
-  const current = getStored<any>(STORAGE_KEYS.SETTINGS, getDefaultSettings());
+export function loadSettings(customEmail?: string): AppSettings {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.SETTINGS, customEmail);
+  let current = getStored<any>(scopedKey, null);
+  if (!current && scopedKey !== STORAGE_KEYS.SETTINGS) {
+    current = getStored<any>(STORAGE_KEYS.SETTINGS, null);
+  }
   const defaults = getDefaultSettings();
+  if (!current) {
+    current = defaults;
+  }
 
   const savedModel = current?.ai?.geminiModel;
   const validModel =
@@ -231,13 +252,20 @@ export function loadSettings(): AppSettings {
       ...(current?.ai?.openrouterKey ? { openrouterKey: current.ai.openrouterKey } : {}),
       ...(current?.ai?.openrouterModel ? { openrouterModel: validOpenrouterModel } : {}),
       proactiveEnabled: current?.ai?.proactiveEnabled !== undefined ? Boolean(current.ai.proactiveEnabled) : true,
+      poofyMode: current?.ai?.poofyMode || 'dynamic',
+      poofyPosition: current?.ai?.poofyPosition || 'left',
       ...(current?.ai?.coachPlanGoal ? { coachPlanGoal: current.ai.coachPlanGoal } : {}),
     },
   };
   return merged;
 }
-export function saveSettings(settings: AppSettings): void {
-  setStored(STORAGE_KEYS.SETTINGS, settings);
+export function saveSettings(settings: AppSettings, customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.SETTINGS, customEmail);
+  setStored(scopedKey, settings);
+  const email = customEmail !== undefined ? customEmail.trim().toLowerCase() : getActiveUserEmail();
+  if (!email) {
+    setStored(STORAGE_KEYS.SETTINGS, settings);
+  }
 }
 
 export function loadStudyResources(customEmail?: string): StudyResource[] {
@@ -250,11 +278,21 @@ export function saveStudyResources(resources: StudyResource[], customEmail?: str
   setStored(scopedKey, resources);
 }
 
-export function loadChecklist(): Record<string, boolean> {
-  return getStored<Record<string, boolean>>(STORAGE_KEYS.CHECKLIST, {});
+export function loadChecklist(customEmail?: string): Record<string, boolean> {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.CHECKLIST, customEmail);
+  let res = getStored<Record<string, boolean> | null>(scopedKey, null);
+  if (!res && scopedKey !== STORAGE_KEYS.CHECKLIST) {
+    res = getStored<Record<string, boolean> | null>(STORAGE_KEYS.CHECKLIST, null);
+  }
+  return res || {};
 }
-export function saveChecklist(checklist: Record<string, boolean>): void {
-  setStored(STORAGE_KEYS.CHECKLIST, checklist);
+export function saveChecklist(checklist: Record<string, boolean>, customEmail?: string): void {
+  const scopedKey = getUserScopedKey(STORAGE_KEYS.CHECKLIST, customEmail);
+  setStored(scopedKey, checklist);
+  const email = customEmail !== undefined ? customEmail.trim().toLowerCase() : getActiveUserEmail();
+  if (!email) {
+    setStored(STORAGE_KEYS.CHECKLIST, checklist);
+  }
 }
 
 export interface StoredTimerState {
@@ -277,12 +315,13 @@ export function saveTimerState(state: StoredTimerState | null, customEmail?: str
 // Full Export / Import
 export function exportAllDataJson(): void {
   const settings = loadSettings();
-  // Clean sensitive keys from export
+  // Clean all sensitive provider keys from export
   const safeSettings = {
     ...settings,
     ai: {
       ...settings.ai,
       geminiKey: '',
+      openrouterKey: '',
     },
   };
 
@@ -299,6 +338,7 @@ export function exportAllDataJson(): void {
       notes: loadNotes(),
       progress: loadProgress(),
       checklist: loadChecklist(),
+      resources: loadStudyResources(),
     },
   };
 
@@ -330,17 +370,19 @@ export function importAllDataJson(jsonText: string): boolean {
     if (Array.isArray(d.notes)) saveNotes(d.notes);
     if (Array.isArray(d.progress)) saveProgress(d.progress);
     if (d.checklist && typeof d.checklist === 'object') saveChecklist(d.checklist);
+    if (Array.isArray(d.resources)) saveStudyResources(d.resources);
 
     if (d.settings) {
       const cur = loadSettings();
       saveSettings({
         ...cur,
         ...d.settings,
-        // Preserve API keys
+        // Preserve local API keys safely
         ai: {
           ...cur.ai,
           ...(d.settings.ai || {}),
           geminiKey: cur.ai.geminiKey,
+          openrouterKey: cur.ai.openrouterKey,
         },
       });
     }
@@ -352,10 +394,14 @@ export function importAllDataJson(jsonText: string): boolean {
   }
 }
 
-// CSV Export (Excel Compatible with UTF-8 BOM)
+// CSV Export (Excel Compatible with UTF-8 BOM & Formula Injection Defense)
 function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]): void {
   const escapeCell = (v: any) => {
-    const s = String(v ?? '');
+    let s = String(v ?? '');
+    // Neutralize formula injection characters (=, +, -, @, tab, cr) for spreadsheet readers
+    if (/^[=+\-@\t\r]/.test(s)) {
+      s = `'${s}`;
+    }
     return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
 

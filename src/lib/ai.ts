@@ -88,7 +88,7 @@ async function callGeminiDirect(params: {
   const model = params.model || 'gemini-2.5-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
     model
-  )}:generateContent?key=${encodeURIComponent(params.apiKey)}`;
+  )}:generateContent`;
 
   const parts: any[] = [];
   if (params.inlineData) {
@@ -125,7 +125,10 @@ async function callGeminiDirect(params: {
 
   const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': params.apiKey,
+    },
     body: JSON.stringify(body),
   });
 
@@ -142,8 +145,13 @@ async function callGeminiDirect(params: {
   }
 
   const data = await res.json();
-  const candidateText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!candidateText) {
+  const partsList = data?.candidates?.[0]?.content?.parts || [];
+  const answerParts = partsList.filter((p: any) => !p.thought && typeof p.text === 'string');
+  const candidateText = (answerParts.length > 0 ? answerParts : partsList)
+    .map((p: any) => p.text || '')
+    .join('');
+
+  if (!candidateText.trim()) {
     throw new Error('مدل جمنای پاسخی تولید نکرد.');
   }
   return candidateText;

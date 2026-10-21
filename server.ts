@@ -19,6 +19,9 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://fsyfdwgtteeyxtoumltz.s
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY || 'sb_publishable_OAtQRxO5sP6unCn_5BnxMA_Wm0Z7LEN';
 const supabaseAuthClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Enable trust proxy for accurate client IP behind reverse proxies
+app.set('trust proxy', 1);
+
 // CORS configuration: only allowedOrigins + APP_URL + ALLOWED_ORIGINS are allowed
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
@@ -61,12 +64,30 @@ interface RateLimitEntry {
   resetAt: number;
 }
 const rateLimitMap = new Map<string, RateLimitEntry>();
+const dailyQuotaMap = new Map<string, RateLimitEntry>();
+
+// Token verification cache to avoid redundant Supabase network roundtrips on rapid requests
+interface TokenCacheEntry {
+  userId: string;
+  expiresAt: number;
+}
+const tokenCache = new Map<string, TokenCacheEntry>();
 
 setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of rateLimitMap.entries()) {
     if (now > entry.resetAt) {
       rateLimitMap.delete(key);
+    }
+  }
+  for (const [key, entry] of dailyQuotaMap.entries()) {
+    if (now > entry.resetAt) {
+      dailyQuotaMap.delete(key);
+    }
+  }
+  for (const [token, entry] of tokenCache.entries()) {
+    if (now > entry.expiresAt) {
+      tokenCache.delete(token);
     }
   }
 }, 60000);
@@ -84,49 +105,44 @@ declare global {
 app.use('/api/ai', async (req: Request, res: Response, next: NextFunction) => {
   if (req.method === 'OPTIONS') return next();
 
-  // 1. Authentication Check
-  const customApiKey = req.body?.apiKey;
+  // 1. Authentication Check via Supabase token (with 60-second in-memory cache)
   let authenticatedUserId: string | null = null;
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
 
-  if (customApiKey && typeof customApiKey === 'string' && customApiKey.trim().length > 0) {
-    // User provided personal API key -> login not required
-  } else {
-    // Using server GEMINI_API_KEY -> Authorization: Bearer <access_token> required
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-
-    if (!token) {
-      return res.status(401).json({
-        ok: false,
-        error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
-      });
-    }
-
-    try {
-      const { data: { user }, error } = await supabaseAuthClient.auth.getUser(token);
-      if (error || !user) {
-        return res.status(401).json({
-          ok: false,
-          error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
-        });
+  if (token) {
+    const cached = tokenCache.get(token);
+    if (cached && cached.expiresAt > Date.now()) {
+      authenticatedUserId = cached.userId;
+      req.aiUserId = cached.userId;
+    } else {
+      try {
+        const { data: { user }, error } = await supabaseAuthClient.auth.getUser(token);
+        if (user && !error) {
+          authenticatedUserId = user.id;
+          req.aiUserId = user.id;
+          tokenCache.set(token, {
+            userId: user.id,
+            expiresAt: Date.now() + 60000,
+          });
+        }
+      } catch (authErr) {
+        console.error('Supabase token verification error:', authErr);
       }
-      authenticatedUserId = user.id;
-      req.aiUserId = user.id;
-    } catch (authErr) {
-      console.error('Supabase token verification error:', authErr);
-      return res.status(401).json({
-        ok: false,
-        error: 'برای استفاده از هوش مصنوعی وارد حساب شوید',
-      });
     }
   }
 
-  // 2. Rate Limiting Check: max 20 requests/min per user id or IP
-  const clientIp =
-    (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
-    req.ip ||
-    req.socket.remoteAddress ||
-    'unknown';
+  // If no authenticated user and no personal API key provided, prompt login
+  const customApiKey = req.body?.apiKey;
+  if (!authenticatedUserId && (!customApiKey || typeof customApiKey !== 'string' || customApiKey.trim().length < 10)) {
+    return res.status(401).json({
+      ok: false,
+      error: 'برای استفاده از هوش مصنوعی وارد حساب کاربری خود شوید یا کلید معتبر در تنظیمات وارد فرمایید.',
+    });
+  }
+
+  // 2. Dual Rate-Limiting Check: 20 req/min and 150 req/day per user ID or client IP
+  const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
   const rateLimitKey = authenticatedUserId ? `user:${authenticatedUserId}` : `ip:${clientIp}`;
 
   const now = Date.now();
@@ -142,6 +158,21 @@ app.use('/api/ai', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
     entry.count += 1;
+  }
+
+  // Daily quota cap
+  const dailyKey = `day:${rateLimitKey}`;
+  const dailyEntry = dailyQuotaMap.get(dailyKey);
+  if (!dailyEntry || now > dailyEntry.resetAt) {
+    dailyQuotaMap.set(dailyKey, { count: 1, resetAt: now + 86400000 });
+  } else {
+    if (dailyEntry.count >= 150) {
+      return res.status(429).json({
+        ok: false,
+        error: 'سقف سهمیه روزانه هوش مصنوعی شما تکمیل شده است. لطفاً فردا مجدداً تلاش فرمایید.',
+      });
+    }
+    dailyEntry.count += 1;
   }
 
   next();
@@ -327,13 +358,35 @@ const DEFAULT_SYSTEM_INSTRUCTION = 'تو طراح و مدرس کنکور تجر�
 // AI API: Topic Explanation
 app.post('/api/ai/explain', async (req: Request, res: Response) => {
   try {
-    const { topic, subject, apiKey, model } = req.body;
+    const { topic, subject, apiKey, model, sourceText } = req.body;
     if (!topic || !subject) {
       return res.status(400).json({ ok: false, error: 'موضوع و درس الزامی هستند.' });
     }
 
     const ai = getGeminiClient(apiKey);
-    const userPrompt = `موضوع: ${topic}
+    let userPrompt = '';
+    if (sourceText && typeof sourceText === 'string' && sourceText.trim().length > 20) {
+      userPrompt = `منبع و متن کتاب درسی رسمی بارگذاری‌شده توسط دانش‌آموز:
+«««
+${sourceText.trim().slice(0, 10000)}
+»»»
+
+موضوع: ${topic}
+درس: ${subject}
+این مبحث را منحصراً در چارچوب متن منبع فوق و استاندارد کنکور سراسری تجربی تشریح کن.
+خروجی منحصراً JSON معتبر با این ساختار:
+{
+  "title": "عنوان مبحث",
+  "intro": "یک پاراگراف مقدمه کلیدی (۲ تا ۳ خط)",
+  "key_points": [
+    {"heading": "تیتر نکته", "explanation": "توضیح مفهومی و کاربردی بر اساس منبع"}
+  ],
+  "formulas": ["فرمول یا قاعده تستی طلایی"],
+  "pitfalls": ["دام تستی رایج طراحان کنکور"],
+  "study_tip": "یک توصیه تکنیکی و نحوه تست‌زنی این مبحث"
+}`;
+    } else {
+      userPrompt = `موضوع: ${topic}
 درس: ${subject}
 این مبحث را در چارچوب کتاب درسی رسمی و کنکور سراسری تجربی تشریح کن.
 خروجی منحصراً JSON معتبر با این ساختار:
@@ -347,6 +400,7 @@ app.post('/api/ai/explain', async (req: Request, res: Response) => {
   "pitfalls": ["دام تستی رایج طراحان کنکور"],
   "study_tip": "یک توصیه تکنیکی و نحوه تست‌زنی این مبحث"
 }`;
+    }
 
     const response = await generateWithFallback(ai, {
       contents: userPrompt,
@@ -538,11 +592,42 @@ app.post('/api/ai/performance-insights', async (req: Request, res: Response) => 
 // AI API: Slide Deck Generator
 app.post('/api/ai/slides', async (req: Request, res: Response) => {
   try {
-    const { topic, subject = 'زیست‌شناسی', grade, chapter, goftar, count = 6, apiKey, model } = req.body;
+    const { topic, subject = 'زیست‌شناسی', grade, chapter, goftar, count = 6, apiKey, model, sourceText } = req.body;
     const cleanCount = Math.min(Math.max(Number(count) || 6, 3), 15);
     const ai = getGeminiClient(apiKey);
 
-    const userPrompt = `تو استاد برجسته و طراح ارشد کنکور سراسری تجربی هستی.
+    let userPrompt = '';
+    if (sourceText && typeof sourceText === 'string' && sourceText.trim().length > 20) {
+      userPrompt = `تو استاد برجسته و طراح ارشد کنکور سراسری تجربی هستی.
+متن و منبع درسی رسمی بارگذاری‌شده توسط دانش‌آموز:
+«««
+${sourceText.trim().slice(0, 10000)}
+»»»
+
+درس: ${subject}
+پایه تحصیلی: ${grade || 'کتاب درسی رسمی'}
+فصل کتاب درسی: ${chapter || 'سرفصل مصوب آموزش و پرورش'}
+گفتار / مبحث کلاسی: ${goftar || topic || 'مبحث کنکوری'}
+تعداد اسلاید مورد نظر: ${cleanCount}
+
+دستورالعمل حیاتی و بدون استثنا:
+۱. اسلایدها را منحصراً بر پایه متن منبع بارگذاری‌شده بالا و سرفصل‌های رسمی آموزش و پرورش تدوین کن.
+۲. نکات خط‌به‌خط، قیدهای کتاب درسی (اغلب، همه، برخی، همواره، به ندرت)، شکل‌ها و نمودارهای رسمی کتاب، و دام‌های تستی طراحان کنکور سال‌های اخیر را به عنوان بولت‌پوینت‌های تفکیک‌شده بنویس.
+۳. ساختار مرحله‌به‌مرحله و آموزشی باشد.
+
+خروجی منحصراً JSON معتبر به این ساختار:
+{
+  "deck_title": "عنوان کلی اسلایدها",
+  "slides": [
+    {
+      "title": "عنوان اسلاید",
+      "bullets": ["نکته خط‌به‌خط ۱", "نکته مفهومی یا قید کتاب ۲", "دام تستی کنکور ۳"],
+      "image_prompt": "توصیف دقیق شکل یا نمودار مرتبط در کتاب درسی"
+    }
+  ]
+}`;
+    } else {
+      userPrompt = `تو استاد برجسته و طراح ارشد کنکور سراسری تجربی هستی.
 درس: ${subject}
 پایه تحصیلی: ${grade || 'کتاب درسی رسمی'}
 فصل کتاب درسی: ${chapter || 'سرفصل مصوب آموزش و پرورش'}
@@ -565,6 +650,7 @@ app.post('/api/ai/slides', async (req: Request, res: Response) => {
     }
   ]
 }`;
+    }
 
     const response = await generateWithFallback(ai, {
       contents: userPrompt,
@@ -651,12 +737,17 @@ ${JSON.stringify(sample, null, 2)}
 // AI API: Study Coach Chat
 app.post('/api/ai/coach', async (req: Request, res: Response) => {
   try {
-    const { message, context, mode, history = [], apiKey, model } = req.body;
+    const { message, context, mode, history = [], apiKey, model, sourceText } = req.body;
     const ai = getGeminiClient(apiKey);
+
+    let sourceClause = '';
+    if (sourceText && typeof sourceText === 'string' && sourceText.trim().length > 20) {
+      sourceClause = `\nجزوه و یادداشت درسی بارگذاری‌شده توسط داوطلب:\n«««\n${sourceText.trim().slice(0, 10000)}\n»»»\nپاسخ و راهنمایی مشاوره‌ای را مستقیماً با این منبع تطبیق بده.\n`;
+    }
 
     const promptText = `اطلاعات و وضعیت ثبت‌شده داوطلب در سیستم:
 ${JSON.stringify(context || {}, null, 2)}
-
+${sourceClause}
 تاریخچه گفتگوی اخیر:
 ${(history || []).slice(-6).map((h: any) => `${h.role === 'user' ? 'داوطلب' : 'مشاور'}: ${h.text}`).join('\n')}
 

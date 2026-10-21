@@ -19,6 +19,8 @@ import {
   loadProgress,
   loadChecklist,
   loadSettings,
+  getUserScopedKey,
+  getActiveUserEmail,
 } from './storage';
 import { mapDatabaseToExam, mapDatabaseToMistake, mapExamToDatabase, mapMistakeToDatabase } from './schemaValidator';
 
@@ -51,20 +53,55 @@ export function subscribeToSyncStatus(callback: (status: SyncStatus) => void): (
   return () => syncListeners.delete(callback);
 }
 
-function loadOutbox(): OutboxItem[] {
+const DEAD_LETTER_KEY = 'ky_sync_dead_letter_v2';
+
+export function loadDeadLetter(customEmail?: string): OutboxItem[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(OUTBOX_KEY);
+    const key = getUserScopedKey(DEAD_LETTER_KEY, customEmail);
+    const raw = localStorage.getItem(key);
     return raw ? JSON.parse(raw) : [];
   } catch {
     return [];
   }
 }
 
-function saveOutbox(items: OutboxItem[]) {
+export function saveDeadLetter(items: OutboxItem[], customEmail?: string) {
   if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(OUTBOX_KEY, JSON.stringify(items));
+    const key = getUserScopedKey(DEAD_LETTER_KEY, customEmail);
+    localStorage.setItem(key, JSON.stringify(items));
+  } catch {}
+}
+
+export function loadOutbox(customEmail?: string): OutboxItem[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const key = getUserScopedKey(OUTBOX_KEY, customEmail);
+    let raw = localStorage.getItem(key);
+    if (!raw && key !== OUTBOX_KEY) {
+      // Fallback check legacy unscoped key once
+      raw = localStorage.getItem(OUTBOX_KEY);
+    }
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveOutbox(items: OutboxItem[], customEmail?: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = getUserScopedKey(OUTBOX_KEY, customEmail);
+    localStorage.setItem(key, JSON.stringify(items));
+  } catch {}
+}
+
+export function clearAccountOutbox(customEmail?: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = getUserScopedKey(OUTBOX_KEY, customEmail);
+    localStorage.removeItem(key);
   } catch {}
 }
 
@@ -529,6 +566,7 @@ export async function pushSettingsToCloud(
       ai: {
         ...settings.ai,
         geminiKey: '',
+        openrouterKey: '',
       },
     };
 
@@ -621,6 +659,7 @@ export async function fetchCloudData(customEmail?: string): Promise<{
   plans?: DailyPlan[];
   notes?: QuickNote[];
   progress?: ProgressEntry[];
+  checklist?: Record<string, boolean>;
 } | null> {
   try {
     const supabase = getSupabaseClient();
@@ -630,12 +669,13 @@ export async function fetchCloudData(customEmail?: string): Promise<{
     const { pairCode, myEmail } = getCoupleSettings();
     const targetEmail = (customEmail || myEmail || '').trim().toLowerCase();
 
-    let sQuery = supabase.from('sessions').select('*').order('created_at', { ascending: false }).limit(500);
-    let eQuery = supabase.from('exams').select('*').order('created_at', { ascending: false }).limit(250);
-    let mQuery = supabase.from('mistakes').select('*').order('created_at', { ascending: false }).limit(350);
-    let pQuery = supabase.from('daily_plans').select('*').order('created_at', { ascending: false }).limit(60);
-    let nQuery = supabase.from('quick_notes').select('*').order('created_at', { ascending: false }).limit(50);
-    let prQuery = supabase.from('progress_entries').select('*').order('created_at', { ascending: false }).limit(100);
+    let sQuery = supabase.from('sessions').select('*').order('created_at', { ascending: false }).limit(2500);
+    let eQuery = supabase.from('exams').select('*').order('created_at', { ascending: false }).limit(1000);
+    let mQuery = supabase.from('mistakes').select('*').order('created_at', { ascending: false }).limit(1000);
+    let pQuery = supabase.from('daily_plans').select('*').order('created_at', { ascending: false }).limit(365);
+    let nQuery = supabase.from('quick_notes').select('*').order('created_at', { ascending: false }).limit(500);
+    let prQuery = supabase.from('progress_entries').select('*').order('created_at', { ascending: false }).limit(500);
+    let chkQuery = supabase.from('user_checklists').select('*').order('created_at', { ascending: false }).limit(365);
 
     if (userId) {
       sQuery = sQuery.eq('user_id', userId);
@@ -644,6 +684,7 @@ export async function fetchCloudData(customEmail?: string): Promise<{
       pQuery = pQuery.eq('user_id', userId);
       nQuery = nQuery.eq('user_id', userId);
       prQuery = prQuery.eq('user_id', userId);
+      chkQuery = chkQuery.eq('user_id', userId);
     } else if (targetEmail) {
       sQuery = sQuery.eq('user_email', targetEmail);
       eQuery = eQuery.eq('user_email', targetEmail);
@@ -651,6 +692,7 @@ export async function fetchCloudData(customEmail?: string): Promise<{
       pQuery = pQuery.eq('user_email', targetEmail);
       nQuery = nQuery.eq('user_email', targetEmail);
       prQuery = prQuery.eq('user_email', targetEmail);
+      chkQuery = chkQuery.eq('user_email', targetEmail);
     } else if (pairCode) {
       sQuery = sQuery.eq('pair_code', pairCode);
       eQuery = eQuery.eq('pair_code', pairCode);
@@ -658,29 +700,49 @@ export async function fetchCloudData(customEmail?: string): Promise<{
       pQuery = pQuery.eq('pair_code', pairCode);
       nQuery = nQuery.eq('pair_code', pairCode);
       prQuery = prQuery.eq('pair_code', pairCode);
+      chkQuery = chkQuery.eq('pair_code', pairCode);
     } else {
       return null;
     }
 
-    const [sessionsRes, examsRes, mistakesRes, plansRes, notesRes, progressRes] = await Promise.all([
+    const [sessionsRes, examsRes, mistakesRes, plansRes, notesRes, progressRes, chkRes] = await Promise.all([
       sQuery,
       eQuery,
       mQuery,
       pQuery,
       nQuery,
       prQuery,
+      chkQuery,
     ]);
+
+    if (sessionsRes.error) console.warn('Sessions cloud fetch notice:', sessionsRes.error.message);
+    if (examsRes.error) console.warn('Exams cloud fetch notice:', examsRes.error.message);
+    if (mistakesRes.error) console.warn('Mistakes cloud fetch notice:', mistakesRes.error.message);
+    if (plansRes.error) console.warn('Plans cloud fetch notice:', plansRes.error.message);
+    if (notesRes.error) console.warn('Notes cloud fetch notice:', notesRes.error.message);
+    if (progressRes.error) console.warn('Progress cloud fetch notice:', progressRes.error.message);
+    if (chkRes.error) console.warn('Checklists cloud fetch notice:', chkRes.error.message);
 
     const mappedExams = (examsRes.data || []).map(mapDatabaseToExam);
     const mappedMistakes = (mistakesRes.data || []).map(mapDatabaseToMistake);
 
+    const remoteChecklist: Record<string, boolean> = {};
+    if (Array.isArray(chkRes.data)) {
+      chkRes.data.forEach((row: any) => {
+        if (row.items && typeof row.items === 'object') {
+          Object.assign(remoteChecklist, row.items);
+        }
+      });
+    }
+
     return {
-      sessions: sessionsRes.data || [],
-      exams: mappedExams,
-      mistakes: mappedMistakes,
-      plans: plansRes.data || [],
-      notes: notesRes.data || [],
-      progress: progressRes.data || [],
+      sessions: sessionsRes.error ? undefined : (sessionsRes.data || []),
+      exams: examsRes.error ? undefined : mappedExams,
+      mistakes: mistakesRes.error ? undefined : mappedMistakes,
+      plans: plansRes.error ? undefined : (plansRes.data || []),
+      notes: notesRes.error ? undefined : (notesRes.data || []),
+      progress: progressRes.error ? undefined : (progressRes.data || []),
+      checklist: chkRes.error ? undefined : remoteChecklist,
     };
   } catch (err) {
     console.warn('Failed to fetch cloud records:', err);
@@ -692,7 +754,11 @@ export async function fetchCloudData(customEmail?: string): Promise<{
 /**
  * Fetch partner's sessions specifically for couple comparison charts
  */
-export async function fetchPartnerSessions(pairCode: string, partnerEmail?: string): Promise<Session[]> {
+export async function fetchPartnerSessions(
+  pairCode: string,
+  partnerEmail?: string,
+  partnerUserId?: string
+): Promise<Session[]> {
   try {
     const supabase = getSupabaseClient();
     if (!supabase || !pairCode) return [];
@@ -702,9 +768,11 @@ export async function fetchPartnerSessions(pairCode: string, partnerEmail?: stri
       .eq('pair_code', pairCode)
       .is('deleted_at', null)
       .order('created_at', { ascending: false })
-      .limit(500);
+      .limit(1000);
 
-    if (partnerEmail) {
+    if (partnerUserId) {
+      q = q.eq('user_id', partnerUserId);
+    } else if (partnerEmail) {
       q = q.eq('user_email', partnerEmail.trim().toLowerCase());
     }
 
@@ -778,6 +846,9 @@ export async function flushOutboxQueue(): Promise<void> {
 
   // Atomically update outbox queue from fresh storage
   const freshOutbox = loadOutbox();
+  const deadLetters = loadDeadLetter();
+  const newlyDead: OutboxItem[] = [];
+
   const updatedOutbox = freshOutbox
     .filter((item) => !succeededIds.has(item.id))
     .map((item) => {
@@ -787,7 +858,18 @@ export async function flushOutboxQueue(): Promise<void> {
       }
       return item;
     })
-    .filter((item) => item.retryCount <= 5); // Bounded retry count
+    .filter((item) => {
+      if (item.retryCount > 5) {
+        newlyDead.push(item);
+        return false;
+      }
+      return true;
+    });
+
+  if (newlyDead.length > 0) {
+    saveDeadLetter([...deadLetters, ...newlyDead]);
+    console.warn(`[Sync] Moved ${newlyDead.length} failed item(s) to dead-letter queue for recovery.`);
+  }
 
   saveOutbox(updatedOutbox);
   setSyncStatus(updatedOutbox.length > 0 ? 'pending' : 'synced');

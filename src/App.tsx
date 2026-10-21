@@ -49,6 +49,7 @@ import {
   pushProgressToCloud,
   pushChecklistToCloud,
   fetchCloudData,
+  fetchCloudSettings,
   mergeWithLastWriteWins,
   flushOutboxQueue,
   syncAllLocalDataToCloud,
@@ -165,6 +166,7 @@ export default function App() {
   const [timerStartedAt, setTimerStartedAt] = useState<number | null>(null);
   const [accumulatedMs, setAccumulatedMs] = useState<number>(0);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
+  const [timerDay, setTimerDay] = useState<string>(() => studyDayKey());
 
   // Global Partner Live State & Realtime
   const [partnerLiveState, setPartnerLiveState] = useState<CoupleMemberState>(() => getStoredPartnerState());
@@ -240,6 +242,9 @@ export default function App() {
     if (saved) {
       setActiveSubject(saved.subject || 'bio');
       setAccumulatedMs(saved.accumulated_ms || 0);
+      if (saved.day) {
+        setTimerDay(saved.day);
+      }
 
       if (saved.status === 'running' && saved.started_at) {
         setTimerStartedAt(saved.started_at);
@@ -505,9 +510,18 @@ export default function App() {
   // Timer control handlers with immediate Supabase broadcast & DB milestone persistence
   const handleStartTimer = () => {
     const now = Date.now();
+    const day = studyDayKey();
+    setTimerDay(day);
     setTimerStartedAt(now);
     setIsTimerRunning(true);
     setIsTimerPaused(false);
+    saveTimerState({
+      subject: activeSubject,
+      status: 'running',
+      started_at: now,
+      accumulated_ms: accumulatedMs,
+      day,
+    });
 
     const stats = getTodayOwnStats();
     broadcastMyState(
@@ -535,6 +549,13 @@ export default function App() {
     setIsTimerRunning(false);
     setIsTimerPaused(true);
     setElapsedSeconds(newElapsed);
+    saveTimerState({
+      subject: activeSubject,
+      status: 'paused',
+      started_at: null,
+      accumulated_ms: newAccum,
+      day: timerDay || studyDayKey(),
+    });
 
     const stats = getTodayOwnStats();
     broadcastMyState(
@@ -557,6 +578,13 @@ export default function App() {
     setTimerStartedAt(now);
     setIsTimerRunning(true);
     setIsTimerPaused(false);
+    saveTimerState({
+      subject: activeSubject,
+      status: 'running',
+      started_at: now,
+      accumulated_ms: accumulatedMs,
+      day: timerDay || studyDayKey(),
+    });
 
     const stats = getTodayOwnStats();
     broadcastMyState(
@@ -580,6 +608,7 @@ export default function App() {
     setTimerStartedAt(null);
     setAccumulatedMs(0);
     setElapsedSeconds(0);
+    setTimerDay(studyDayKey());
     saveTimerState(null);
 
     const stats = getTodayOwnStats();
@@ -662,11 +691,12 @@ export default function App() {
   };
 
   const handleDeleteExam = (id: string) => {
+    const now = Date.now();
     const target = exams.find((e) => e.id === id);
     if (target) {
-      pushExamToCloud({ ...target, deleted_at: Date.now() });
+      pushExamToCloud({ ...target, deleted_at: now, updated_at: now });
     }
-    const updated = exams.map((e) => (e.id === id ? { ...e, deleted_at: Date.now() } : e));
+    const updated = exams.map((e) => (e.id === id ? { ...e, deleted_at: now, updated_at: now } : e));
     setExams(updated);
     saveExams(updated);
   };
@@ -710,12 +740,13 @@ export default function App() {
   };
 
   const handleDeleteMistake = (cardId: string) => {
+    const now = Date.now();
     const target = mistakes.find((m) => m.id === cardId);
     if (target) {
-      pushMistakeToCloud({ ...target, deleted_at: Date.now() });
+      pushMistakeToCloud({ ...target, deleted_at: now, updated_at: now });
     }
     const updated = mistakes.map((m) =>
-      m.id === cardId ? { ...m, deleted_at: Date.now() } : m
+      m.id === cardId ? { ...m, deleted_at: now, updated_at: now } : m
     );
     setMistakes(updated);
     saveMistakes(updated);
@@ -743,11 +774,12 @@ export default function App() {
   };
 
   const handleDeleteProgress = (id: string) => {
+    const now = Date.now();
     const target = progressList.find((p) => p.id === id);
     if (target) {
-      pushProgressToCloud({ ...target, deleted_at: Date.now() } as any);
+      pushProgressToCloud({ ...target, deleted_at: now, updated_at: now } as any);
     }
-    const updated = progressList.map((p) => (p.id === id ? { ...p, deleted_at: Date.now() } : p));
+    const updated = progressList.map((p) => (p.id === id ? { ...p, deleted_at: now, updated_at: now } : p));
     setProgressList(updated);
     saveProgress(updated);
   };
@@ -762,9 +794,9 @@ export default function App() {
   const handleDeleteNote = (id: string) => {
     const target = notes.find((n) => n.id === id);
     if (target) {
-      pushNoteToCloud({ ...target, deleted_at: Date.now() } as any);
+      pushNoteToCloud({ ...target, deleted_at: Date.now(), updated_at: Date.now() } as any);
     }
-    const updated = notes.map((n) => (n.id === id ? { ...n, deleted_at: Date.now() } : n));
+    const updated = notes.map((n) => (n.id === id ? { ...n, deleted_at: Date.now(), updated_at: Date.now() } : n));
     setNotes(updated);
     saveNotes(updated);
   };
@@ -784,21 +816,25 @@ export default function App() {
   const handleWipeCategory = (cat: 'sessions' | 'exams' | 'mistakes' | 'plans') => {
     const now = Date.now();
     if (cat === 'sessions') {
-      const updated = sessions.map((s) => ({ ...s, deleted_at: now }));
+      const updated = sessions.map((s) => ({ ...s, deleted_at: now, updated_at: now }));
       setSessions(updated);
       saveSessions(updated);
+      updated.forEach((s) => pushSessionToCloud(s));
     } else if (cat === 'exams') {
-      const updated = exams.map((e) => ({ ...e, deleted_at: now }));
+      const updated = exams.map((e) => ({ ...e, deleted_at: now, updated_at: now }));
       setExams(updated);
       saveExams(updated);
+      updated.forEach((e) => pushExamToCloud(e));
     } else if (cat === 'mistakes') {
-      const updated = mistakes.map((m) => ({ ...m, deleted_at: now }));
+      const updated = mistakes.map((m) => ({ ...m, deleted_at: now, updated_at: now }));
       setMistakes(updated);
       saveMistakes(updated);
+      updated.forEach((m) => pushMistakeToCloud(m));
     } else if (cat === 'plans') {
-      const updated = plans.map((p) => ({ ...p, deleted_at: now }));
+      const updated = plans.map((p) => ({ ...p, deleted_at: now, updated_at: now }));
       setPlans(updated);
       savePlans(updated);
+      updated.forEach((p) => pushPlanToCloud(p));
     }
   };
 
@@ -810,28 +846,81 @@ export default function App() {
     setPlans(loadPlans(email));
     setNotes(loadNotes(email));
     setProgressList(loadProgress(email));
-    setChecklist(loadChecklist());
-    setSettings(loadSettings());
+    setChecklist(loadChecklist(email));
+    setSettings(loadSettings(email));
 
-    // Also pull latest records from Supabase for this account
+    // Pull and merge records from Supabase for this account with LWW (never overwrite local data)
     if (email) {
       fetchCloudData(email).then((remote) => {
         if (!remote) return;
-        if (remote.sessions && remote.sessions.length > 0) {
-          setSessions(remote.sessions);
-          saveSessions(remote.sessions, email);
+        if (remote.sessions !== undefined) {
+          setSessions((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.sessions || []);
+            saveSessions(merged, email);
+            return merged;
+          });
         }
-        if (remote.exams && remote.exams.length > 0) {
-          setExams(remote.exams);
-          saveExams(remote.exams, email);
+        if (remote.exams !== undefined) {
+          setExams((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.exams || []);
+            saveExams(merged, email);
+            return merged;
+          });
         }
-        if (remote.mistakes && remote.mistakes.length > 0) {
-          setMistakes(remote.mistakes);
-          saveMistakes(remote.mistakes, email);
+        if (remote.mistakes !== undefined) {
+          setMistakes((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.mistakes || []);
+            saveMistakes(merged, email);
+            return merged;
+          });
         }
-        if (remote.plans && remote.plans.length > 0) {
-          setPlans(remote.plans);
-          savePlans(remote.plans, email);
+        if (remote.plans !== undefined) {
+          setPlans((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.plans || []);
+            savePlans(merged, email);
+            return merged;
+          });
+        }
+        if (remote.notes !== undefined) {
+          setNotes((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.notes || []);
+            saveNotes(merged, email);
+            return merged;
+          });
+        }
+        if (remote.progress !== undefined) {
+          setProgressList((prev) => {
+            const merged = mergeWithLastWriteWins(prev, remote.progress || []);
+            saveProgress(merged, email);
+            return merged;
+          });
+        }
+        if (remote.checklist !== undefined && Object.keys(remote.checklist).length > 0) {
+          setChecklist((prev) => {
+            const merged = { ...prev, ...remote.checklist };
+            saveChecklist(merged, email);
+            return merged;
+          });
+        }
+      });
+
+      // Also pull and merge user settings from cloud
+      fetchCloudSettings().then((cloudSettings) => {
+        if (cloudSettings) {
+          setSettings((cur) => {
+            const merged: AppSettings = {
+              ...cur,
+              ...cloudSettings,
+              ai: {
+                ...cur.ai,
+                ...cloudSettings.ai,
+                geminiKey: cur.ai.geminiKey,
+                openrouterKey: cur.ai.openrouterKey,
+              },
+            };
+            saveSettings(merged, email);
+            return merged;
+          });
         }
       });
     }
@@ -1084,6 +1173,7 @@ export default function App() {
           isTimerRunning={isTimerRunning}
           activeSubject={activeSubject}
           onNavigate={setActiveView}
+          onUpdateSettings={handleUpdateSettings}
         />
       )}
 

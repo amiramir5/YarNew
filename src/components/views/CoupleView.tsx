@@ -201,14 +201,19 @@ export const CoupleView: React.FC<CoupleViewProps> = ({
     const timer = setInterval(() => {
       setPartnerState((prev) => {
         if (!prev.isStudying) return prev;
-        const next = {
+        // Verify partner heartbeat is not stale (> 2 minutes without remote ping)
+        if (prev.lastHeartbeat && Date.now() - prev.lastHeartbeat > 120_000) {
+          return {
+            ...prev,
+            isStudying: false,
+            online: false,
+          };
+        }
+        return {
           ...prev,
           sessionElapsedSeconds: prev.sessionElapsedSeconds + 1,
           todaySeconds: prev.todaySeconds + 1,
-          lastHeartbeat: Date.now(),
         };
-        savePartnerState(next);
-        return next;
       });
     }, 1000);
 

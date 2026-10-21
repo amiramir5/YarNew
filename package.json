@@ -9,6 +9,7 @@
     "start": "node server.ts",
     "preview": "vite preview",
     "test": "tsx --test tests/**/*.test.ts",
+    "validate-schema": "node scripts/validate-payload-columns.mjs",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit"
   },

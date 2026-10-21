@@ -65,6 +65,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [openrouterModel, setOpenrouterModel] = useState(settings.ai.openrouterModel || 'deepseek/deepseek-chat');
   const [showOpenrouterKey, setShowOpenrouterKey] = useState(false);
   const [proactiveEnabled, setProactiveEnabled] = useState(settings.ai.proactiveEnabled !== false);
+  const [poofyMode, setPoofyMode] = useState<'dynamic' | 'quiet' | 'hidden'>(settings.ai.poofyMode || 'dynamic');
+  const [poofyPosition, setPoofyPosition] = useState<'left' | 'right'>(settings.ai.poofyPosition || 'left');
 
   // Supabase configuration state
   const initialSb = getSupabaseConfig();
@@ -108,6 +110,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         openrouterKey: openrouterKey.trim(),
         openrouterModel,
         proactiveEnabled,
+        poofyMode,
+        poofyPosition,
       },
     };
     onUpdateSettings(updatedSettings);
@@ -412,8 +416,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             )}
 
-            {/* Proactive Counselor Checkbox */}
-            <div className="pt-2 border-t border-slate-100 dark:border-slate-800">
+            {/* Proactive Counselor & Poofy Settings */}
+            <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
               <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-800 dark:text-slate-200">
                 <input
                   type="checkbox"
@@ -421,8 +425,104 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                   onChange={(e) => setProactiveEnabled(e.target.checked)}
                   className="rounded-md text-blue-600 focus:ring-blue-500"
                 />
-                <span>فعال‌سازی مشاور هوشمند پیش‌فعال (هشدار تعادل دروس، یادآوری پایه‌ها و پیشنهاد برنامه)</span>
+                <span>فعال‌سازی تحلیل هوشمند پیش‌فعال (تعادل دروس، مرور لایتنر و تارگت روزانه)</span>
               </label>
+
+              {proactiveEnabled && (
+                <div className="p-3.5 rounded-2xl bg-blue-50/50 dark:bg-[#0c1e38]/60 border border-blue-100 dark:border-blue-900/60 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
+                        <span>همراه شناور پوفی (Poofy Companion)</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        حالت نمایش و نحوه تعامل پوفی در گوشه صفحه را شخصی‌سازی کنید
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Mode Options */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPoofyMode('dynamic')}
+                      className={`p-2.5 rounded-xl border text-right transition-all cursor-pointer ${
+                        poofyMode === 'dynamic'
+                          ? 'border-blue-500 bg-white dark:bg-[#0b172a] shadow-xs text-blue-700 dark:text-blue-300 font-bold'
+                          : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <span className="font-black text-xs block">🌟 پویا و فعال</span>
+                      <span className="text-[10px] opacity-80 block mt-0.5">
+                        عکس‌العمل به ثبت پارت و اهداف؛ بدون پاپ‌آپ مزاحم
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPoofyMode('quiet')}
+                      className={`p-2.5 rounded-xl border text-right transition-all cursor-pointer ${
+                        poofyMode === 'quiet'
+                          ? 'border-blue-500 bg-white dark:bg-[#0b172a] shadow-xs text-blue-700 dark:text-blue-300 font-bold'
+                          : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <span className="font-black text-xs block">🧘 آرام و متمرکز</span>
+                      <span className="text-[10px] opacity-80 block mt-0.5">
+                        حضور آرامش‌بخش و بی‌صدا؛ باز شدن فقط با کلیک خودت
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setPoofyMode('hidden')}
+                      className={`p-2.5 rounded-xl border text-right transition-all cursor-pointer ${
+                        poofyMode === 'hidden'
+                          ? 'border-blue-500 bg-white dark:bg-[#0b172a] shadow-xs text-blue-700 dark:text-blue-300 font-bold'
+                          : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-white/60 dark:hover:bg-slate-800/40'
+                      }`}
+                    >
+                      <span className="font-black text-xs block">💤 مخفی</span>
+                      <span className="text-[10px] opacity-80 block mt-0.5">
+                        عدم نمایش پوفی شناور در محیط برنامه
+                      </span>
+                    </button>
+                  </div>
+
+                  {/* Position Option */}
+                  {poofyMode !== 'hidden' && (
+                    <div className="flex items-center justify-between pt-1 border-t border-blue-100/60 dark:border-blue-900/40 text-xs">
+                      <span className="text-slate-600 dark:text-slate-300 font-bold text-[11px]">
+                        موقعیت قرارگیری در صفحه:
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setPoofyPosition('left')}
+                          className={`px-3 py-1 rounded-xl border cursor-pointer font-bold text-xs transition-colors ${
+                            poofyPosition === 'left'
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white dark:bg-[#0b172a] border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          سمت چپ (پیش‌فرض)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPoofyPosition('right')}
+                          className={`px-3 py-1 rounded-xl border cursor-pointer font-bold text-xs transition-colors ${
+                            poofyPosition === 'right'
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white dark:bg-[#0b172a] border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'
+                          }`}
+                        >
+                          سمت راست
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center gap-3 pt-2">
