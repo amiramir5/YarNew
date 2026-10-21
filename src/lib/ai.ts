@@ -74,7 +74,28 @@ function cleanAndParseJson<T = any>(text: string): T {
 }
 
 /**
- * Direct client-side call to Google Gemini REST API
+ * Builds model-aware thinking config for Gemini models.
+ * - gemini-2.5 family: thinking can be fully disabled via thinkingBudget: 0
+ * - gemini-3.x family: thinking only supports "low"/"high"/"dynamic" levels
+ */
+function buildGeminiThinkingConfig(model: string): Record<string, unknown> | undefined {
+  if (model.includes('gemini-2.5')) {
+    return { thinkingBudget: 0 };
+  }
+  if (/^gemini-3/.test(model)) {
+    return { thinkingLevel: 'low' };
+  }
+  return undefined;
+}
+
+function isOpenAiThinkingError(message: string): boolean {
+  const t = (message || '').toLowerCase();
+  return t.includes('thinking') || t.includes('unknown name') || t.includes('invalid json payload');
+}
+
+/**
+ * Direct client-side call to Google Gemini REST API.
+ * Supports optional SSE streaming via onChunk (only for the chat surface that benefits from it).
  */
 async function callGeminiDirect(params: {
   apiKey: string;
@@ -84,11 +105,10 @@ async function callGeminiDirect(params: {
   inlineData?: { mimeType: string; data: string };
   temperature?: number;
   responseMimeType?: string;
+  maxOutputTokens?: number;
+  onChunk?: (partialText: string) => void;
 }): Promise<string> {
-  const model = params.model || 'gemini-2.5-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model
-  )}:generateContent`;
+  const model = params.model || 'gemini-3.5-flash';
 
   const parts: any[] = [];
   if (params.inlineData) {
@@ -101,6 +121,22 @@ async function callGeminiDirect(params: {
   }
   parts.push({ text: params.prompt });
 
+  const generationConfig: any = {
+    temperature: params.temperature ?? 0.3,
+  };
+  if (params.maxOutputTokens && params.maxOutputTokens > 0) {
+    generationConfig.maxOutputTokens = params.maxOutputTokens;
+  }
+  if (params.responseMimeType === 'application/json') {
+    generationConfig.responseMimeType = 'application/json';
+  }
+  const thinkingConfig = buildGeminiThinkingConfig(model);
+  if (thinkingConfig && !params.responseMimeType) {
+    // Thinking is capped/disabled for free-text chat to keep latency low.
+    // JSON-structured tasks keep default reasoning because truncation there is costly.
+    generationConfig.thinkingConfig = thinkingConfig;
+  }
+
   const body: any = {
     contents: [
       {
@@ -108,9 +144,7 @@ async function callGeminiDirect(params: {
         parts,
       },
     ],
-    generationConfig: {
-      temperature: params.temperature ?? 0.3,
-    },
+    generationConfig,
   };
 
   if (params.systemInstruction) {
@@ -119,42 +153,116 @@ async function callGeminiDirect(params: {
     };
   }
 
-  if (params.responseMimeType === 'application/json') {
-    body.generationConfig.responseMimeType = 'application/json';
-  }
+  const buildUrl = (streaming: boolean) =>
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}${
+      streaming ? ':streamGenerateContent?alt=sse' : ':generateContent'
+    }`;
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': params.apiKey,
-    },
-    body: JSON.stringify(body),
-  });
+  const timeoutMs = 45000;
 
-  if (!res.ok) {
-    const errJson = await res.json().catch(() => ({}));
-    const errMsg = errJson?.error?.message || `خطای جمنای (${res.status})`;
-    if (res.status === 400 && errMsg.includes('API_KEY_INVALID')) {
-      throw new Error('کلید Google Gemini واردشده نامعتبر است. لطفاً کلید صحیح را از Google AI Studio دریافت و در تنظیمات وارد کنید.');
+  const requestOnce = async (sse: boolean) => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(buildUrl(sse), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': params.apiKey,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        const errMsg = errJson?.error?.message || `خطای جمنای (${res.status})`;
+        if (res.status === 400 && errMsg.includes('API_KEY_INVALID')) {
+          throw new Error('کلید Google Gemini واردشده نامعتبر است. لطفاً کلید صحیح را از Google AI Studio دریافت و در تنظیمات وارد کنید.');
+        }
+        if (res.status === 429) {
+          throw new Error('سهمیه کلید جمنای موقتاً تمام شده است. لطفاً یک دقیقه دیگر تلاش کنید.');
+        }
+        throw new Error(errMsg);
+      }
+
+      // Non-streaming path
+      if (!sse || !res.body) {
+        const data = await res.json();
+        const partsList = data?.candidates?.[0]?.content?.parts || [];
+        const answerParts = partsList.filter((p: any) => !p.thought && typeof p.text === 'string');
+        return (answerParts.length > 0 ? answerParts : partsList)
+          .map((p: any) => p.text || '')
+          .join('');
+      }
+
+      // SSE streaming path — merge all chunks into the final answer while emitting partial text
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let accumulated = '';
+
+      const handleDataLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) return;
+        const payload = trimmed.slice(5).trim();
+        if (!payload) return;
+        try {
+          const json = JSON.parse(payload);
+          const chunkParts = json?.candidates?.[0]?.content?.parts || [];
+          const text = chunkParts
+            .filter((p: any) => !p.thought && typeof p.text === 'string')
+            .map((p: any) => p.text)
+            .join('');
+          if (text) {
+            accumulated += text;
+            params.onChunk?.(accumulated);
+          }
+        } catch {
+          // ignore malformed SSE fragment
+        }
+      };
+
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIdx = buffer.indexOf('\n');
+        while (newlineIdx !== -1) {
+          handleDataLine(buffer.slice(0, newlineIdx));
+          buffer = buffer.slice(newlineIdx + 1);
+          newlineIdx = buffer.indexOf('\n');
+        }
+      }
+      if (buffer) handleDataLine(buffer);
+
+      const finalText = accumulated.trim();
+      if (!finalText.trim()) {
+        throw new Error('مدل جمنای پاسخی تولید نکرد.');
+      }
+      return finalText;
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        throw new Error('اتصال به جمنای بیش از ۴۵ ثانیه طول کشید؛ پاسخ ناتمام ماند. لطفاً دوباره تلاش کنید.');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeoutId);
     }
-    if (res.status === 429) {
-      throw new Error('سهمیه کلید جمنای موقتاً تمام شده است. لطفاً یک دقیقه دیگر تلاش کنید.');
+  };
+
+  try {
+    return await requestOnce(!!params.onChunk);
+  } catch (err: any) {
+    // Safety net: some model versions reject unknown thinking/NIM fields — retry once bare.
+    if (isOpenAiThinkingError(err?.message || '') && generationConfig.thinkingConfig) {
+      delete generationConfig.thinkingConfig;
+      return await requestOnce(!!params.onChunk);
     }
-    throw new Error(errMsg);
+    throw err;
   }
-
-  const data = await res.json();
-  const partsList = data?.candidates?.[0]?.content?.parts || [];
-  const answerParts = partsList.filter((p: any) => !p.thought && typeof p.text === 'string');
-  const candidateText = (answerParts.length > 0 ? answerParts : partsList)
-    .map((p: any) => p.text || '')
-    .join('');
-
-  if (!candidateText.trim()) {
-    throw new Error('مدل جمنای پاسخی تولید نکرد.');
-  }
-  return candidateText;
 }
 
 /**
@@ -167,6 +275,7 @@ async function callOpenRouterDirect(params: {
   prompt: string;
   temperature?: number;
   responseMimeType?: string;
+  maxOutputTokens?: number;
 }): Promise<string> {
   const model = params.model || 'deepseek/deepseek-chat';
   const url = 'https://openrouter.ai/api/v1/chat/completions';
@@ -182,6 +291,10 @@ async function callOpenRouterDirect(params: {
     messages,
     temperature: params.temperature ?? 0.3,
   };
+
+  if (params.maxOutputTokens && params.maxOutputTokens > 0) {
+    body.max_tokens = params.maxOutputTokens;
+  }
 
   if (params.responseMimeType === 'application/json') {
     body.response_format = { type: 'json_object' };
@@ -244,12 +357,14 @@ async function executeAiTask(params: {
   inlineData?: { mimeType: string; data: string };
   customKey?: string;
   preferredModel?: string;
+  maxOutputTokens?: number;
+  onChunk?: (partialText: string) => void;
 }): Promise<string> {
   const settings = loadSettings();
   const provider = settings.ai.provider || 'gemini';
   const geminiKey = params.customKey || settings.ai.geminiKey?.trim() || '';
   const openrouterKey = settings.ai.openrouterKey?.trim() || '';
-  const geminiModel = params.preferredModel || settings.ai.geminiModel || 'gemini-2.5-flash';
+  const geminiModel = params.preferredModel || settings.ai.geminiModel || 'gemini-3.5-flash';
   const openrouterModel = settings.ai.openrouterModel || 'deepseek/deepseek-chat';
   const baseUrl = getApiBaseUrl();
 
@@ -262,10 +377,11 @@ async function executeAiTask(params: {
       prompt: params.userPrompt,
       temperature: params.temperature,
       responseMimeType: params.responseMimeType,
+      maxOutputTokens: params.maxOutputTokens,
     });
   }
 
-  // Priority 2: User personal Gemini Key (Direct client-side, 2-4s response time)
+  // Priority 2: User personal Gemini Key (Direct client-side, streaming chat when supported)
   if (geminiKey) {
     return await callGeminiDirect({
       apiKey: geminiKey,
@@ -275,6 +391,8 @@ async function executeAiTask(params: {
       inlineData: params.inlineData,
       temperature: params.temperature,
       responseMimeType: params.responseMimeType,
+      maxOutputTokens: params.maxOutputTokens,
+      onChunk: params.onChunk,
     });
   }
 
@@ -289,7 +407,7 @@ async function executeAiTask(params: {
       };
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 18000);
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       const res = await fetch(url, {
         method: 'POST',
@@ -362,6 +480,7 @@ ${sourceClause}
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.3,
+    maxOutputTokens: 1800,
     customKey,
     preferredModel: model,
   });
@@ -409,6 +528,7 @@ ${sourceClause}
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.4,
+    maxOutputTokens: 4096,
     preferredModel: model,
   });
 
@@ -428,6 +548,7 @@ export async function generateSlides(
   let chapter = typeof topicOrParams === 'object' ? topicOrParams.chapter : undefined;
   let goftar = typeof topicOrParams === 'object' ? topicOrParams.goftar : undefined;
   let sourceText = typeof topicOrParams === 'object' ? topicOrParams.sourceText : undefined;
+  let model = typeof topicOrParams === 'object' ? topicOrParams.model : undefined;
 
   const sourceClause = sourceText
     ? `\nاسلایدها باید منحصراً بر پایه متن منبع زیر تدوین شوند:\n${sourceText.slice(0, 4000)}\n`
@@ -457,6 +578,8 @@ ${sourceClause}
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.3,
+    maxOutputTokens: 4096,
+    preferredModel: model,
   });
 
   return cleanAndParseJson<SlideDeck>(raw);
@@ -492,17 +615,22 @@ ${JSON.stringify(sample, null, 2)}
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.3,
+    maxOutputTokens: 1400,
     preferredModel: model,
   });
 
   return cleanAndParseJson<MistakesAnalysis>(raw);
 }
 
-const COACH_SYSTEM_PROMPT = `تو یک مشاور زبده، باهوش، مهربان و فوق‌العاده هوشیار کنکور سراسری تجربی و دانشگاه‌های ایران هستی.
-اطلاعاتت کاملاً به‌روز و مستند بر کتب درسی رسمی (دهم، یازدهم، دوازدهم)، آخرین مصوبات سازمان سنجش، تحلیل‌های کانون قلم‌چی، پایگاه هیوا و شبکه رشد است.
-لحن تو صمیمی، دلسوزانه، انرژی‌بخش، دقیق و واقع‌بینانه است (مانند مشاوری که کنار میز مطالعه دانش‌آموز نشسته و حواسش به تمام جزئیات هست).
-پاسخ‌هایت باید ساختاریافته، جذاب و کاربردی باشند و در صورت درخواست برنامه، جدول زمانی واضح با تفکیک ساعات روزانه پیشنهاد دهی.
-پاسخ‌ها را به زبان فارسی سلیس و بدون عبارات کلیشه‌ای ارائه کن.`;
+const COACH_SYSTEM_PROMPT = `تو «مشاور کنکوریار»، مشاور مطالعهٔ کنکور سراسری تجربی ایران هستی.
+محدوده پاسخ‌گویی تو فقط این موارد است: درس‌ها و مباحث کتب درسی رسمی (دهم، یازدهم، دوازدهم)، حل تست و آسیب‌شناسی غلط‌ها، روش مطالعه، برنامه‌ریزی روزانه، مدیریت استرس جلسه آزمون، و اخبار/قوانین رسمی سازمان سنجش.
+اگر سؤال خارج از این محدوده بود (موضوعات روزمره، سیاسی، فناوری، ورزشی یا هر چیز غیرکنکوری)، در حداکثر یک جمله مؤدبانه بگو «این موضوع خارج از محدوده کنکور است» و روی کار اصلی برگرد.
+قواعد سبک پاسخ (کاملاً الزامی):
+- پاسخ کوتاه و فشرده باشد: معمولاً حداکثر ۸ تا ۱۲ خط؛ فقط اگر کاربر صریحاً «برنامه» یا «توضیح کامل» بخواهد می‌توانی مفصل‌تر بنویسی.
+- بدون تعارف و پرهیاهو و جمله‌های اضافی؛ بدون لحن احساساتی تکراری. مستقیم سر اصل مطلب برو.
+- از فهرست شماره‌دار یا دکمه‌ای کوتاه استفاده کن، نه پاراگراف‌های طولانی.
+- برای هر نکته آماری یا قانونی به «بر اساس مصوبات سنجش» یا خط کتاب اشاره کن؛ منبع داستانی/سایت‌های غیررسمی ذکر نکن.
+- پاسخ به فارسی سلیس و روان بده.`;
 
 export async function consultCoach(
   message: string,
@@ -510,7 +638,8 @@ export async function consultCoach(
   mode: string,
   history: Array<{ role: 'user' | 'assistant'; text: string }>,
   model?: string,
-  sourceText?: string
+  sourceText?: string,
+  onChunk?: (partialText: string) => void
 ): Promise<string> {
   const historyText = (history || [])
     .slice(-6)
@@ -521,8 +650,8 @@ export async function consultCoach(
     ? `\nتوجه مهم: دانش‌آموز منبع درسی اختصاصی زیر را ضمیمه کرده است. پاسخ تو باید دقیقاً بر پایه این متن داده شود و مطالب متفرقه خارج از این منبع اضافه نشود:\n--- منبع درسی ---\n${sourceText.slice(0, 4000)}\n--- پایان منبع ---\n`
     : '';
 
-  const userPrompt = `زمینه وضعیت درسی و عملکرد دانش‌آموز:
-${JSON.stringify(context || {}, null, 2)}
+  const userPrompt = `زمینه وضعیت دانش‌آموز:
+${JSON.stringify(context || {})}
 ${sourceClause}
 تاریخچه مکالمه اخیر:
 ${historyText}
@@ -530,7 +659,7 @@ ${historyText}
 پیام جدید دانش‌آموز:
 ${message}
 
-پاسخ مشاوره‌ای خود را با تحلیل دقیق و راهکارهای کاملاً عملیاتی بنویس.`;
+پاسخ مشاوره‌ای کوتاه، فشرده و عملیاتی بنویس (طبق سبک تعریف‌شده در پرامپت سیستم).`;
 
   return await executeAiTask({
     apiPath: '/api/ai/coach',
@@ -539,6 +668,8 @@ ${message}
     userPrompt,
     temperature: 0.35,
     preferredModel: model,
+    maxOutputTokens: 1200,
+    onChunk,
   });
 }
 
@@ -560,6 +691,7 @@ export async function extractOcrText(imageBase64: string, model?: string): Promi
     userPrompt,
     inlineData: { mimeType, data: cleanData },
     temperature: 0.1,
+    maxOutputTokens: 4096,
     preferredModel: model,
   });
 }
@@ -634,6 +766,7 @@ ${sourceClause}
     inlineData,
     responseMimeType: 'application/json',
     temperature: 0.2,
+    maxOutputTokens: 2500,
     preferredModel: params.model,
   });
 
@@ -674,6 +807,7 @@ ${JSON.stringify(metrics, null, 2)}
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.3,
+    maxOutputTokens: 1000,
     preferredModel: model,
   });
 
@@ -698,6 +832,7 @@ export async function extractDocumentText(fileBase64: string, mimeType: string, 
     userPrompt,
     inlineData: { mimeType: cleanMime, data: cleanData },
     temperature: 0.1,
+    maxOutputTokens: 8192,
     preferredModel: model,
   });
 }
@@ -764,6 +899,7 @@ export async function generateProactiveSchedule(params: {
     userPrompt,
     responseMimeType: 'application/json',
     temperature: 0.3,
+    maxOutputTokens: 3500,
     preferredModel: params.model,
   });
 
@@ -822,6 +958,7 @@ export async function generateProactiveAdvice(params: {
       userPrompt,
       responseMimeType: 'application/json',
       temperature: 0.3,
+      maxOutputTokens: 900,
       preferredModel: params.model,
     });
 
@@ -878,7 +1015,7 @@ export async function testAiConnection(
   } else if (customKeyOrProvider === 'gemini') {
     provider = 'gemini';
     key = modelOrKey;
-    targetModel = extraModel || 'gemini-2.5-flash';
+    targetModel = extraModel || 'gemini-3.5-flash';
   } else {
     key = customKeyOrProvider;
     targetModel = modelOrKey;
@@ -896,9 +1033,16 @@ export async function testAiConnection(
         return { ok: true, message: `اتصال OpenRouter (${targetModel}) با موفقیت تایید شد.` };
       }
     } else {
-      const res = await explainTopic('سینتیک شیمیایی', 'شیمی', key, targetModel);
-      if (res && res.title) {
-        return { ok: true, message: 'اتصال هوش مصنوعی Gemini تایید شد و پاسخ آزمایشی با موفقیت دریافت گردید.' };
+      // Cheap connectivity ping instead of a full topic-generation task
+      const res = await callGeminiDirect({
+        apiKey: key || '',
+        model: targetModel || 'gemini-3.5-flash',
+        prompt: 'فقط یک کلمه بنویس: سلام',
+        temperature: 0.1,
+        maxOutputTokens: 16,
+      });
+      if (res && res.trim().length > 0) {
+        return { ok: true, message: `اتصال هوش مصنوعی Gemini (${targetModel}) با موفقیت تایید شد.` };
       }
     }
     return { ok: false, message: 'پاسخ دریافتی ناقص بود.' };

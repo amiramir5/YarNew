@@ -22,8 +22,8 @@ describe('AI Settings & Allowed Models Configuration', () => {
   it('ALLOWED_GEMINI_MODELS matches expected candidate models', () => {
     assert.deepEqual(Array.from(ALLOWED_GEMINI_MODELS), [
       'gemini-3.5-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
-      'gemini-2.5-flash',
     ]);
   });
 

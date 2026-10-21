@@ -233,10 +233,20 @@ async function generateWithFallback(ai: GoogleGenAI, params: any, preferredModel
   let lastError: any = null;
   for (const model of modelsToTry) {
     try {
-      const response = await ai.models.generateContent({
+      const thinkingConfig = buildServerThinkingConfig(model);
+      const requestParams: any = {
         ...params,
         model,
-      });
+      };
+      if (thinkingConfig) {
+        const baseConfig = params?.config || {};
+        // Don't pair thinking-caps with web-search tooling (server rejects the combination)
+        requestParams.config = {
+          ...baseConfig,
+          thinkingConfig,
+        };
+      }
+      const response = await ai.models.generateContent(requestParams);
       return response;
     } catch (err: any) {
       lastError = err;
@@ -244,6 +254,17 @@ async function generateWithFallback(ai: GoogleGenAI, params: any, preferredModel
       const msg = String(err?.message || '');
 
       console.warn(`Model ${model} attempt failed:`, msg || err);
+
+      // Safety net: model rejected the thinkingConfig field — retry this model without it
+      if (buildServerThinkingConfig(model) && isOpenAiThinkingErrorServer(msg)) {
+        try {
+          const bareParams: any = { ...params, model };
+          if (bareParams.config) delete bareParams.config.thinkingConfig;
+          return await ai.models.generateContent(bareParams);
+        } catch (retryErr: any) {
+          lastError = retryErr;
+        }
+      }
 
       // 400 and 401/403/API_KEY_INVALID: abort immediately with clear Persian message
       if (
@@ -326,34 +347,37 @@ function formatAiError(err: any): { status: number; error: string } {
 }
 
 // System instructions
-const COACH_SYSTEM_PROMPT = `Act as an expert Iranian educational/career counselor specializing in Iran's university admissions system (Konkur, Sanjesh, academic records, quotas, ranking, major selection, and admission outcomes).
-
-Your information must be genuinely up to date:
-- Before answering any time-sensitive question, search the web and verify the latest information, preferably from official Sanjesh, Ministry of Education, universities, and official notices.
-- Know the latest developments and announcements, including what happened today.
-- Never rely on outdated rules when newer regulations or announcements exist.
-- Distinguish confirmed official information from unofficial reports, estimates, and your own analysis.
-
-You must be highly knowledgeable about:
-- Konkur regulations and scoring systems
-- Academic-record/Final-exam effects and changes by year
-- Quotas, regional classifications, and other admission quotas
-- Rank, score, percentile, and how the Sanjesh report card works
-- Course-by-course admission statistics
-- Historical acceptance records and last-admitted ranks where reliable data exists
-- University/major capacities, admission methods, and changes
-- Day, evening, self-funded, Azad, Payam Noor, non-profit, and other Iranian higher-education options
-- Major selection strategy and realistic acceptance ranges
-- Comparing a student's profile against historical admission data
-
-When analyzing a student's chances, do not invent acceptance statistics. Clearly label estimates and explain the evidence behind them.
-
-For every important factual claim, provide the source and URL. If reliable evidence cannot be found, explicitly say:
-"I don't know — no reliable source was found."
-
-Respond in Persian.`;
+const COACH_SYSTEM_PROMPT = `تو «مشاور کنکوریار»، مشاور مطالعهٔ کنکور سراسری تجربی ایران هستی.
+محدوده پاسخ‌گویی تو فقط این موارد است: درس‌ها و مباحث کتب درسی رسمی (دهم، یازدهم، دوازدهم)، حل تست و آسیب‌شناسی غلط‌ها، روش مطالعه، برنامه‌ریزی روزانه، مدیریت استرس جلسه آزمون، و اخبار/قوانین رسماً منتشرشده سازمان سنجش.
+اگر سؤال خارج از این محدوده بود (موضوعات روزمره، سیاسی، فناوری، ورزشی یا هر چیز غیرکنکوری)، در حداکثر یک جمله مؤدبانه بگو «این موضوع خارج از محدوده کنکور است» و روی کار اصلی برگرد.
+قواعد سبک پاسخ (کاملاً الزامی):
+- پاسخ کوتاه و فشرده باشد: معمولاً حداکثر ۸ تا ۱۲ خط؛ فقط اگر کاربر صریحاً «برنامه» یا «توضیح کامل» بخواهد می‌توانی مفصل‌تر بنویسی.
+- بدون تعارف و پرهیاهو و جمله‌های اضافی؛ مستقیم سر اصل مطلب برو.
+- از فهرست شماره‌دار یا بولت کوتاه استفاده کن، نه پاراگراف‌های طولانی.
+- آمار و قوانین سنجش را دقیق و رسمی اعلام کن؛ اگر اطلاعات رسمی نداری صادقانه بگو و حدس نزن.
+- پاسخ به فارسی سلیس و روان بده.`;
 
 const DEFAULT_SYSTEM_INSTRUCTION = 'تو طراح و مدرس کنکور تجربی ایران هستی. فقط JSON معتبر مطابق ساختار خواسته‌شده برگردان.';
+
+/**
+ * Model-aware thinking config (server side).
+ * - gemini-2.5: thinkingBudget 0 disables thinking
+ * - gemini-3.x: lowest thinking level ("low")
+ */
+function buildServerThinkingConfig(model: string): Record<string, unknown> | undefined {
+  if (model.includes('gemini-2.5')) {
+    return { thinkingBudget: 0 };
+  }
+  if (/^gemini-3/.test(model)) {
+    return { thinkingLevel: 'low' };
+  }
+  return undefined;
+}
+
+function isOpenAiThinkingErrorServer(message: unknown): boolean {
+  const t = String(message || '').toLowerCase();
+  return t.includes('thinking') || t.includes('unknown name') || t.includes('invalid json payload');
+}
 
 // AI API: Topic Explanation
 app.post('/api/ai/explain', async (req: Request, res: Response) => {
@@ -745,8 +769,8 @@ app.post('/api/ai/coach', async (req: Request, res: Response) => {
       sourceClause = `\nجزوه و یادداشت درسی بارگذاری‌شده توسط داوطلب:\n«««\n${sourceText.trim().slice(0, 10000)}\n»»»\nپاسخ و راهنمایی مشاوره‌ای را مستقیماً با این منبع تطبیق بده.\n`;
     }
 
-    const promptText = `اطلاعات و وضعیت ثبت‌شده داوطلب در سیستم:
-${JSON.stringify(context || {}, null, 2)}
+    const promptText = `وضعیت داوطلب در سیستم:
+${JSON.stringify(context || {})}
 ${sourceClause}
 تاریخچه گفتگوی اخیر:
 ${(history || []).slice(-6).map((h: any) => `${h.role === 'user' ? 'داوطلب' : 'مشاور'}: ${h.text}`).join('\n')}
@@ -755,17 +779,16 @@ ${(history || []).slice(-6).map((h: any) => `${h.role === 'user' ? 'داوطلب
 پرسش یا پیام داوطلب: ${message || 'وضعیت من را تحلیل کن و یک برنامه تخصصی و عملیاتی بگو'}
 
 دستورالعمل پاسخ:
-- به عنوان مشاور ارشد و متخصص کنکور و پذیرش دانشگاه‌ها پاسخ بده.
-- تحلیل‌هایت دقیق، مستند، حرفه‌ای و کاربردی باشد.
-- برای هر ادعای آماری یا ضوابط کلیدی کنکور و سوابق تحصیلی، منبع معتبر ذکر کن.
-- ساختاربندی و دسته‌بندی منظم و شفاف با تیترها و نکات کلیدی به زبان فارسی ارائه کن.`;
+- فقط در محدوده کنکور، کتاب درسی و مشاوره مطالعه پاسخ بده؛ خارج از محدوده با یک جمله اعلام کن.
+- پاسخ کوتاه، فشرده و عملیاتی؛ حداکثر ۸ تا ۱۲ خط، با فهرست شماره‌دار یا بولت کوتاه.
+- بدون تعارف، مقدمه‌چینی و پرهیاهو.`;
 
     const response = await generateWithFallback(ai, {
       contents: promptText,
       config: {
         systemInstruction: COACH_SYSTEM_PROMPT,
         temperature: 0.3,
-        tools: [{ googleSearch: {} }],
+        maxOutputTokens: 1200,
       },
     }, model);
 

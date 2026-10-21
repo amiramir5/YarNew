@@ -317,8 +317,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium text-xs"
                   >
                     <option value="gemini-3.5-flash">gemini-3.5-flash (پیشنهادی و پرسرعت)</option>
+                    <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (سریع‌ترین)</option>
                     <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                   </select>
                 </div>
 

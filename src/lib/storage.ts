@@ -33,8 +33,8 @@ export function uid(): string {
 
 export const ALLOWED_GEMINI_MODELS = [
   'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
-  'gemini-2.5-flash',
 ] as const;
 
 export const ALLOWED_OPENROUTER_MODELS = [
@@ -84,9 +84,26 @@ export function getActiveUserEmail(): string {
 export function getUserScopedKey(baseKey: string, customEmail?: string): string {
   const email = customEmail !== undefined ? customEmail.trim().toLowerCase() : getActiveUserEmail();
   if (!email) return baseKey;
-  // Sanitize key
-  const safe = email.replace(/[^a-zA-Z0-9_@.-]/g, '_');
-  return `${baseKey}__${safe}`;
+  // Sanitize key — encodeURIComponent is lossless & collision-free, unlike the old regex
+  // that mapped different emails (a+b@x.com vs a_b@x.com) onto the same storage key.
+  const safe = encodeURIComponent(email).replace(/%/g, '_');
+  const scopedKey = `${baseKey}__${safe}`;
+
+  // One-time migration: copy data stored under the legacy sanitized key to the new one
+  if (typeof window !== 'undefined' && !localStorage.getItem(scopedKey)) {
+    const legacySafe = email.replace(/[^a-zA-Z0-9_@.-]/g, '_');
+    const legacyKey = `${baseKey}__${legacySafe}`;
+    if (legacyKey !== scopedKey) {
+      const raw = localStorage.getItem(legacyKey);
+      if (raw) {
+        try {
+          localStorage.setItem(scopedKey, raw);
+        } catch {}
+      }
+    }
+  }
+
+  return scopedKey;
 }
 
 // Local Storage Wrappers with Safe JSON Parse

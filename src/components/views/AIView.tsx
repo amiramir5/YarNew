@@ -116,7 +116,7 @@ export const AIView: React.FC<AIViewProps> = ({
   >([
     {
       role: 'assistant',
-      text: 'سلام. من مشاور تخصصی و کارشناس پذیرش کنکور سراسری، سوابق تحصیلی و دانشگاه‌ها هستم. کلیه تحلیل‌ها بر پایه آخرین مصوبات رسمی سازمان سنجش، آموزش و پرورش و کارنامه‌های واقعی ارائه می‌شود. سوال یا موضوع خود را مطرح کنید.',
+      text: 'سلام! من مشاور کنکوریار هستم. پاسخ‌هایم فقط در محدوده کنکور است: مباحث کتاب درسی، تست‌زنی، برنامه‌ریزی و اصلاح اشتباهات. سوال درسی خود را کوتاه بپرس تا جواب فشرده و کاربردی بدهم.',
     },
   ]);
   const [isCoachLoading, setIsCoachLoading] = useState(false);
@@ -387,13 +387,48 @@ export const AIView: React.FC<AIViewProps> = ({
         activeResource: activeResource ? { name: activeResource.name, subject: activeResource.subject } : undefined,
       };
 
-      const reply = await consultCoach(text, context, mode || 'عمومی', chatMessages, undefined, activeResource?.extracted_text);
-      setChatMessages((prev) => [...prev, { role: 'assistant', text: reply }]);
+      // Streaming draft: last assistant message is edited in place as tokens arrive
+      const draft = { role: 'assistant' as const, text: '' };
+      setChatMessages((prev) => [...prev, draft]);
+
+      const reply = await consultCoach(
+        text,
+        context,
+        mode || 'عمومی',
+        chatMessages,
+        undefined,
+        activeResource?.extracted_text,
+        (partial) => {
+          setChatMessages((prev) => {
+            if (prev.length === 0) return prev;
+            const copy = [...prev];
+            copy[copy.length - 1] = { role: 'assistant', text: partial };
+            return copy;
+          });
+        }
+      );
+
+      setChatMessages((prev) => {
+        const copy = [...prev];
+        if (copy.length > 0 && copy[copy.length - 1].role === 'assistant') {
+          copy[copy.length - 1] = { role: 'assistant', text: reply };
+        } else {
+          copy.push({ role: 'assistant', text: reply });
+        }
+        return copy;
+      });
     } catch (err: any) {
-      setChatMessages((prev) => [
-        ...prev,
-        { role: 'assistant', text: `خطا در دریافت پاسخ: ${err.message || 'مشکلی رخ داد.'}` },
-      ]);
+      const errMsg = `خطا در دریافت پاسخ: ${err.message || 'مشکلی رخ داد.'}`;
+      setChatMessages((prev) => {
+        const copy = [...prev];
+        // Replace the still-empty streaming draft with the error, else append
+        if (copy.length > 0 && copy[copy.length - 1].role === 'assistant' && !copy[copy.length - 1].text.trim()) {
+          copy[copy.length - 1] = { role: 'assistant', text: errMsg };
+        } else {
+          copy.push({ role: 'assistant', text: errMsg });
+        }
+        return copy;
+      });
     } finally {
       setIsCoachLoading(false);
     }
@@ -826,7 +861,7 @@ export const AIView: React.FC<AIViewProps> = ({
                 </div>
               </div>
             ))}
-            {isCoachLoading && (
+            {isCoachLoading && !chatMessages[chatMessages.length - 1]?.text?.trim() && (
               <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400 text-xs py-2 animate-pulse">
                 <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
                 <span>مشاور در حال تحلیل کارشناسی، بررسی مصوبات و تدوین پاسخ مستند است…</span>
