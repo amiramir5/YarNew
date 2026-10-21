@@ -515,12 +515,12 @@ export async function pushChecklistToCloud(
   const { pairCode, myEmail } = getCoupleSettings();
 
   if (!supabase || !userId) {
-    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}`, day, items: checklist });
+    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}-local`, day, items: checklist });
     return false;
   }
 
   try {
-    const stableId = `chk-${day}-${userId}`;
+    const stableId = `chk-${day}-${userId ?? 'local'}`;
     const { error } = await supabase.from('user_checklists').upsert({
       id: stableId,
       user_id: userId,
@@ -539,7 +539,7 @@ export async function pushChecklistToCloud(
     }
     return true;
   } catch {
-    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}`, day, items: checklist });
+    if (!options?.skipQueue) queueForSync('checklist', { id: `chk-${day}-${userId ?? 'local'}`, day, items: checklist });
     return false;
   }
 }
@@ -728,11 +728,16 @@ export async function fetchCloudData(customEmail?: string): Promise<{
 
     const remoteChecklist: Record<string, boolean> = {};
     if (Array.isArray(chkRes.data)) {
-      chkRes.data.forEach((row: any) => {
-        if (row.items && typeof row.items === 'object') {
-          Object.assign(remoteChecklist, row.items);
-        }
-      });
+      // Merge oldest → newest so newer day rows have the final word
+      // (fetch is ordered created_at DESC; naive iteration let older rows clobber newer ones)
+      chkRes.data
+        .slice()
+        .sort((a: any, b: any) => (Number(a?.updated_at) || 0) - (Number(b?.updated_at) || 0))
+        .forEach((row: any) => {
+          if (row.items && typeof row.items === 'object') {
+            Object.assign(remoteChecklist, row.items);
+          }
+        });
     }
 
     return {
@@ -791,7 +796,7 @@ export async function fetchPartnerSessions(
  * Flush offline outbox queue with atomic success tracking (never overwrites newly queued items)
  */
 export async function flushOutboxQueue(): Promise<void> {
-  const currentOutbox = loadOutbox();
+  let currentOutbox = loadOutbox();
   if (currentOutbox.length === 0) {
     setSyncStatus('synced');
     return;
@@ -810,7 +815,16 @@ export async function flushOutboxQueue(): Promise<void> {
   }
 
   setSyncStatus('syncing');
+  // Give parked dead-letter items another chance while we are online
+  retryDeadLetterQueue();
+  currentOutbox = loadOutbox();
+  if (currentOutbox.length === 0) {
+    setSyncStatus('synced');
+    return;
+  }
+  const flushedAtMs = Date.now();
   const succeededIds = new Set<string>();
+  const pushedPayloadTimes = new Map<string, number>();
   const failedIncrements = new Map<string, number>();
 
   for (const item of currentOutbox) {
@@ -836,6 +850,7 @@ export async function flushOutboxQueue(): Promise<void> {
 
       if (success) {
         succeededIds.add(item.id);
+        pushedPayloadTimes.set(item.id, Number(item.payload?.updated_at) || item.addedAt);
       } else {
         failedIncrements.set(item.id, (item.retryCount || 0) + 1);
       }
@@ -850,7 +865,14 @@ export async function flushOutboxQueue(): Promise<void> {
   const newlyDead: OutboxItem[] = [];
 
   const updatedOutbox = freshOutbox
-    .filter((item) => !succeededIds.has(item.id))
+    .filter((item) => {
+      if (!succeededIds.has(item.id)) return true;
+      // Race guard: if a *newer* payload for the same record was queued while we
+      // were flushing the stale snapshot, keep it — never drop fresh data.
+      const pushedTime = pushedPayloadTimes.get(item.id) ?? 0;
+      const freshTime = Number(item.payload?.updated_at) || item.addedAt;
+      return freshTime > pushedTime;
+    })
     .map((item) => {
       const increment = failedIncrements.get(item.id);
       if (increment !== undefined) {
@@ -876,6 +898,25 @@ export async function flushOutboxQueue(): Promise<void> {
 }
 
 /**
+ * Retry dead-letter queue items once network is back (called alongside flush on reconnect).
+ */
+export function retryDeadLetterQueue(): void {
+  const dead = loadDeadLetter();
+  if (dead.length === 0) return;
+  const outbox = loadOutbox();
+  const restored = dead.map((item) => ({ ...item, retryCount: 0 }));
+  const merged = [...outbox];
+  for (const item of restored) {
+    const idx = merged.findIndex((m) => m.id === item.id && m.type === item.type);
+    if (idx >= 0) merged[idx] = item;
+    else merged.push(item);
+  }
+  saveOutbox(merged);
+  saveDeadLetter([]);
+  setSyncStatus('pending');
+}
+
+/**
  * Migrate and synchronize all local data to cloud on first login (with proper user_id)
  */
 export async function syncAllLocalDataToCloud(userId: string): Promise<void> {
@@ -887,41 +928,50 @@ export async function syncAllLocalDataToCloud(userId: string): Promise<void> {
   }
 
   try {
+    let pushFailures = 0;
+    const push = async (result: Promise<boolean>) => {
+      if (!(await result)) pushFailures++;
+    };
+
     const sessions = loadSessions();
     for (const s of sessions) {
-      await pushSessionToCloud(s);
+      await push(pushSessionToCloud(s));
     }
     const exams = loadExams();
     for (const e of exams) {
-      await pushExamToCloud(e);
+      await push(pushExamToCloud(e));
     }
     const mistakes = loadMistakes();
     for (const m of mistakes) {
-      await pushMistakeToCloud(m);
+      await push(pushMistakeToCloud(m));
     }
     const plans = loadPlans();
     for (const p of plans) {
-      await pushPlanToCloud(p);
+      await push(pushPlanToCloud(p));
     }
     const notes = loadNotes();
     for (const n of notes) {
-      await pushNoteToCloud(n);
+      await push(pushNoteToCloud(n));
     }
     const progress = loadProgress();
     for (const pr of progress) {
-      await pushProgressToCloud(pr);
+      await push(pushProgressToCloud(pr));
     }
     const checklist = loadChecklist();
     if (checklist && Object.keys(checklist).length > 0) {
-      await pushChecklistToCloud(studyDayKey(), checklist);
+      await push(pushChecklistToCloud(studyDayKey(), checklist));
     }
     const settings = loadSettings();
     if (settings) {
-      await pushSettingsToCloud(settings);
+      await push(pushSettingsToCloud(settings));
     }
 
-    if (typeof window !== 'undefined') {
+    // Only mark migration complete when every push succeeded — a partial success
+    // flag used to strand pre-login data forever on a mid-migration network drop.
+    if (pushFailures === 0 && typeof window !== 'undefined') {
       localStorage.setItem(migrationKey, 'true');
+    } else if (pushFailures > 0) {
+      console.warn(`[Sync] Initial data migration incomplete: ${pushFailures} item(s) failed and remain queued.`);
     }
   } catch (err) {
     console.warn('Initial data migration notice:', err);

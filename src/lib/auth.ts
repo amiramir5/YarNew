@@ -329,12 +329,17 @@ export async function signInWithEmail(
       return { ok: false, error: translateSupabaseAuthError(error.message) };
     }
 
-    if (data.user) {
+    if (data.user && data.session) {
       await syncUserToCoupleSettings(data.user);
       globalAuthState.user = data.user;
       globalAuthState.session = data.session;
       notifyListeners();
       return { ok: true, user: data.user };
+    }
+
+    if (data.user && !data.session) {
+      // user without session must never be treated as authenticated — sync would silently stall
+      return { ok: false, error: 'ورود انجام شد اما نشست فعال دریافت نشد. لطفاً دوباره تلاش کنید.' };
     }
 
     return { ok: true };
@@ -501,11 +506,35 @@ export async function signOutUser(): Promise<void> {
   globalAuthState.session = null;
   globalAuthState.email = null;
   localStorage.removeItem(AUTH_PERSIST_KEY);
+  // Also drop the cached authenticated-user marker used by getActiveUserEmail()
+  localStorage.removeItem('ky_authenticated_user_v2');
 
   // Clear pending outbox queue for the signed-out account to prevent cross-account leak
   try {
     clearAccountOutbox(previousEmail || undefined);
   } catch {}
+
+  // Clear couple-identity residue so the next visitor on this device isn't
+  // silently namespaced to the departed account (getActiveUserEmail fallback).
+  try {
+    localStorage.removeItem('ky_couple_my_email_v4');
+    localStorage.removeItem('ky_couple_my_role_v4');
+    localStorage.removeItem('ky_couple_partner_state_v4');
+    localStorage.removeItem('ky_couple_my_state_v4');
+    const deadLetterKeyLegacy = previousEmail
+      ? `ky_sync_dead_letter_v2__${String(previousEmail).replace(/[^a-zA-Z0-9_@.-]/g, '_')}`
+      : 'ky_sync_dead_letter_v2';
+    localStorage.removeItem(deadLetterKeyLegacy);
+    if (previousEmail) {
+      localStorage.removeItem(`ky_sync_dead_letter_v2__${encodeURIComponent(previousEmail).replace(/%/g, '_')}`);
+    }
+    localStorage.removeItem('ky_sync_dead_letter_v2');
+  } catch {}
+
+  // Notify the app so it can reload anonymous/local data
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('konkoor_profile_switched'));
+  }
 
   notifyListeners();
 }
