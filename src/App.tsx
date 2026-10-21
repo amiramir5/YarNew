@@ -269,6 +269,18 @@ export default function App() {
   const sessionsRef = useRef(sessions);
   const timerStartedAtRef = useRef(timerStartedAt);
   const accumulatedMsRef = useRef(accumulatedMs);
+
+  // Critical fix: heartbeats read these refs — they were NEVER synced to live state,
+  // so the partner always received todaySeconds: 0 and a frozen session from launch time.
+  useEffect(() => {
+    isTimerRunningRef.current = isTimerRunning;
+    elapsedSecondsRef.current = elapsedSeconds;
+    activeSubjectRef.current = activeSubject;
+    sessionsRef.current = sessions;
+    timerStartedAtRef.current = timerStartedAt;
+    accumulatedMsRef.current = accumulatedMs;
+  }, [isTimerRunning, elapsedSeconds, activeSubject, sessions, timerStartedAt, accumulatedMs]);
+
   const requestWakeLock = async () => {
     await requestAppWakeLock();
   };
@@ -277,55 +289,28 @@ export default function App() {
     releaseAppWakeLock();
   };
 
-  // Initial Cloud Sync with Last-Write-Wins Conflict Resolution
+  // Initial Cloud Sync — robust against restored auth session arriving after mount.
+  // The old version ran once with no account loaded and silently skipped the pull forever.
+  const initialSyncRanRef = useRef(false);
   useEffect(() => {
-    fetchCloudData().then((remote) => {
-      if (!remote) return;
-      if (remote.sessions && remote.sessions.length > 0) {
-        setSessions((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.sessions || []);
-          saveSessions(merged);
-          return merged;
-        });
+    let cancelled = false;
+    let attempts = 0;
+    const tryInitialSync = () => {
+      if (cancelled || initialSyncRanRef.current) return;
+      const email = getActiveUserEmail();
+      if (email) {
+        initialSyncRanRef.current = true;
+        handleRefreshData(email);
+        flushOutboxQueue();
+      } else if (++attempts <= 5) {
+        // Auth session restore can take a moment — retry, then fall back to anonymous flow
+        setTimeout(tryInitialSync, 1200);
       }
-      if (remote.exams && remote.exams.length > 0) {
-        setExams((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.exams || []);
-          saveExams(merged);
-          return merged;
-        });
-      }
-      if (remote.mistakes && remote.mistakes.length > 0) {
-        setMistakes((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.mistakes || []);
-          saveMistakes(merged);
-          return merged;
-        });
-      }
-      if (remote.plans && remote.plans.length > 0) {
-        setPlans((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.plans || []);
-          savePlans(merged);
-          return merged;
-        });
-      }
-      if (remote.notes && remote.notes.length > 0) {
-        setNotes((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.notes || []);
-          saveNotes(merged);
-          return merged;
-        });
-      }
-      if (remote.progress && remote.progress.length > 0) {
-        setProgressList((prev) => {
-          const merged = mergeWithLastWriteWins(prev, remote.progress || []);
-          saveProgress(merged);
-          return merged;
-        });
-      }
-    });
-
-    flushOutboxQueue();
+    };
+    tryInitialSync();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Partner Live State Sync & Realtime Subscription
@@ -368,6 +353,9 @@ export default function App() {
     const tick = setInterval(() => {
       setPartnerLiveState((prev) => {
         if (!prev.isStudying) return prev;
+        // Staleness guard: if we haven't received an authoritative heartbeat in over a
+        // minute, stop extrapolating locally (stale data ticks were unknowingly counting forward).
+        if (prev.lastHeartbeat && Date.now() - prev.lastHeartbeat > 60000) return prev;
         return {
           ...prev,
           sessionElapsedSeconds: prev.sessionElapsedSeconds + 1,
@@ -509,6 +497,7 @@ export default function App() {
 
   // Timer control handlers with immediate Supabase broadcast & DB milestone persistence
   const handleStartTimer = () => {
+    if (isTimerRunning) return; // already running — don't restart clock
     const now = Date.now();
     const day = studyDayKey();
     setTimerDay(day);
@@ -574,6 +563,7 @@ export default function App() {
   };
 
   const handleResumeTimer = () => {
+    if (isTimerRunning) return; // guard against double-tap resuming twice
     const now = Date.now();
     setTimerStartedAt(now);
     setIsTimerRunning(true);
@@ -602,7 +592,7 @@ export default function App() {
     );
   };
 
-  const handleResetTimer = () => {
+  const handleResetTimer = (skipStaleBroadcast = false) => {
     setIsTimerRunning(false);
     setIsTimerPaused(false);
     setTimerStartedAt(null);
@@ -610,21 +600,23 @@ export default function App() {
     setElapsedSeconds(0);
     setTimerDay(studyDayKey());
     saveTimerState(null);
-
-    const stats = getTodayOwnStats();
-    broadcastMyState(
-      {
-        isStudying: false,
-        subject: activeSubject,
-        subjectName: getSubject(activeSubject).name,
-        timerStartedAt: null,
-        accumulatedSeconds: 0,
-        sessionElapsedSeconds: 0,
-        todaySeconds: stats.totalSecs,
-        todayTests: stats.totalTests,
-      },
-      { persistToDb: true }
-    );
+    // Save/finish flows broadcast the *correct* totals themselves; here only the plain reset broadcasts
+    if (!skipStaleBroadcast) {
+      const stats = getTodayOwnStats();
+      broadcastMyState(
+        {
+          isStudying: false,
+          subject: activeSubject,
+          subjectName: getSubject(activeSubject).name,
+          timerStartedAt: null,
+          accumulatedSeconds: 0,
+          sessionElapsedSeconds: 0,
+          todaySeconds: stats.totalSecs,
+          todayTests: stats.totalTests,
+        },
+        { persistToDb: true }
+      );
+    }
   };
 
   const handleFinishTimer = () => {
@@ -639,7 +631,7 @@ export default function App() {
     setFinishSessionOpen(true);
   };
 
-  const handleSaveFinishedSession = (newSession: Session) => {
+  const handleSaveFinishedSession = async (newSession: Session) => {
     const updated = [newSession, ...sessions];
     setSessions(updated);
     saveSessions(updated);
@@ -647,7 +639,9 @@ export default function App() {
 
     setActiveChapter('');
     setActiveGoftar('');
-    handleResetTimer();
+    // Skip reset's stale broadcast (its totals don't include the just-saved session);
+    // a single ordered authoritative broadcast below closes the race that regressed partner totals.
+    handleResetTimer(true);
     setFinishSessionOpen(false);
     setActiveView('home');
 
@@ -660,7 +654,7 @@ export default function App() {
       0
     );
 
-    broadcastMyState(
+    await broadcastMyState(
       {
         isStudying: false,
         subject: activeSubject,
@@ -681,6 +675,22 @@ export default function App() {
     setSessions(updated);
     saveSessions(updated);
     pushSessionToCloud(session);
+
+    // Manual sessions also refresh the partner's "today" view
+    const todayKey = studyDayKey();
+    const todayUpdated = updated.filter((s) => s && !s.deleted_at && s.day === todayKey);
+    broadcastMyState(
+      {
+        isStudying: false,
+        subject: session.subject,
+        todaySeconds: todayUpdated.reduce((acc, s) => acc + (s.seconds || 0), 0),
+        todayTests: todayUpdated.reduce(
+          (acc, s) => acc + (s.correct || 0) + (s.wrong || 0) + (s.blank || 0),
+          0
+        ),
+      },
+      { persistToDb: true }
+    );
   };
 
   const handleAddExam = (exam: Exam) => {
@@ -1274,6 +1284,7 @@ export default function App() {
         initialBook={activeBook}
         initialChapter={activeChapter}
         initialGoftar={activeGoftar}
+        initialDay={timerDay}
       />
 
       <AuthModal

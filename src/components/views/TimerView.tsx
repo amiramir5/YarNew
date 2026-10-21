@@ -123,7 +123,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
   useEffect(() => {
     if (isRunning) {
       requestAppWakeLock().then((active) => {
-        setWakeLockActive(active || true);
+        setWakeLockActive(Boolean(active));
       });
     } else {
       releaseAppWakeLock();
@@ -138,7 +138,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
       setWakeLockActive(false);
     } else {
       const active = await requestAppWakeLock();
-      setWakeLockActive(active || true);
+      setWakeLockActive(Boolean(active));
     }
   };
 

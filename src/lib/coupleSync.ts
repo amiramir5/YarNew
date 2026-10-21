@@ -45,14 +45,14 @@ export const DEFAULT_HUSBAND_NAME = 'کاربر ۱';
 export const DEFAULT_WIFE_NAME = 'کاربر ۲';
 export const DEFAULT_PAIR_CODE = '';
 
-let serverClockOffsetMs = 0;
+let serverClockOffsetMs: number | null = null;
 
 export function getServerOffset(): number {
-  if (typeof window !== 'undefined' && serverClockOffsetMs === 0) {
+  if (typeof window !== 'undefined' && serverClockOffsetMs === null) {
     const stored = localStorage.getItem(STORAGE_KEYS.SERVER_OFFSET);
-    if (stored) serverClockOffsetMs = parseInt(stored, 10) || 0;
+    serverClockOffsetMs = stored ? parseInt(stored, 10) || 0 : 0;
   }
-  return serverClockOffsetMs;
+  return serverClockOffsetMs ?? 0;
 }
 
 export function setServerOffset(offset: number) {
@@ -337,6 +337,10 @@ export function computePartnerLive(
   const rawStudying = Boolean(row?.is_studying);
   const hasTimer = Boolean(row?.timer_started_at);
   const isOnline = Boolean(row?.online);
+  const viewerDay = studyDayKey();
+  // Don't leak yesterday's stored totals into "today" — a stale row from a previous
+  // study day contributes nothing unless its study_day matches the viewer's day.
+  const rowIsToday = !row?.study_day || row.study_day === viewerDay;
 
   const THREE_HOURS_MS = 3 * 60 * 60 * 1000;
   const FORTY_FIVE_SEC_MS = 45000;
@@ -346,7 +350,7 @@ export function computePartnerLive(
 
   if (rawStudying && hasTimer && !isOnline) {
     // App in background, timer running: active up to 3 hours from updated_at
-    if (diffMs <= THREE_HOURS_MS) {
+    if (diffMs <= THREE_HOURS_MS && rowIsToday) {
       isStudying = true;
       online = false;
     } else {
@@ -374,7 +378,7 @@ export function computePartnerLive(
   const accumulated = Number(row?.accumulated_seconds) || 0;
 
   let liveSession = sessionElapsed;
-  let liveToday = todaySec;
+  let liveToday = rowIsToday ? todaySec : 0;
 
   if (isStudying) {
     if (row?.timer_started_at) {
@@ -384,7 +388,7 @@ export function computePartnerLive(
       const extraSeconds = Math.max(0, Math.floor((correctedNow - updatedAtMs) / 1000));
       liveSession = sessionElapsed + extraSeconds;
     }
-    const baseToday = Math.max(0, todaySec - sessionElapsed);
+    const baseToday = Math.max(0, liveToday - sessionElapsed);
     liveToday = baseToday + liveSession;
   }
 
@@ -457,10 +461,14 @@ export function getOrCreatePairChannel(pairCode: string): any {
   }
 
   currentPairCodeForChannel = pairCode;
+  const settings = getCoupleSettings();
+  // Presence key must be unique per device/role — the old shared pairCode key
+  // collapsed both partners into a single presence slot.
+  const presenceKey = `${settings.myRole || 'me'}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
   const channel = supabase.channel(`couple-live-${pairCode}`, {
     config: {
       broadcast: { self: false, ack: false },
-      presence: { key: pairCode },
+      presence: { key: presenceKey },
     },
   });
 
@@ -635,12 +643,20 @@ export async function broadcastMyState(
 
   if (shouldPersist) {
     lastDatabasePersistMs = now;
+    const sentAtMs = Date.now();
     try {
       const supabase = getSupabaseClient();
       if (supabase) {
         const { data: sessionData } = await supabase.auth.getSession();
         const userId = sessionData?.session?.user?.id || null;
         if (!userId) return; // Do not write null user_id
+
+        // timer_started_at must live on the server clock, not the device clock —
+        // the partner's computePartnerLive compares it against the corrected clock.
+        const serverEpochTimerStart =
+          typeof fullState.timerStartedAt === 'number'
+            ? fullState.timerStartedAt + getServerOffset()
+            : null;
 
         const { data: upsertData, error: upsertError } = await supabase
           .from('couple_live_states')
@@ -654,7 +670,7 @@ export async function broadcastMyState(
               is_studying: fullState.isStudying,
               subject: fullState.subject,
               subject_name: fullState.subjectName,
-              timer_started_at: fullState.timerStartedAt || null,
+              timer_started_at: serverEpochTimerStart,
               accumulated_seconds: fullState.accumulatedSeconds || 0,
               session_elapsed_seconds: fullState.sessionElapsedSeconds,
               today_seconds: fullState.todaySeconds,
@@ -672,8 +688,11 @@ export async function broadcastMyState(
           console.warn('DB upsert error in broadcastMyState:', upsertError.message);
         } else if (upsertData?.updated_at) {
           const serverMs = new Date(upsertData.updated_at).getTime();
-          const localMs = Date.now();
-          setServerOffset(serverMs - localMs);
+          const roundTripMs = Date.now() - sentAtMs;
+          // Sample local time at the moment the server stamped the row (≈ sentAt + rtt/2)
+          // so pure network latency doesn't contaminate the offset estimate.
+          const localAtServerMoment = sentAtMs + Math.floor(roundTripMs / 2);
+          setServerOffset(serverMs - localAtServerMoment);
         }
       }
     } catch (err: any) {

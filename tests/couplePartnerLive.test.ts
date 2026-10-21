@@ -1,6 +1,7 @@
-import { describe, it } from 'node:test';
+﻿import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { computePartnerLive, CoupleSettings } from '../src/lib/coupleSync';
+import { studyDayKey } from '../src/lib/jalali';
 
 describe('computePartnerLive Unified Live State Engine', () => {
   const mockSettings: CoupleSettings = {
@@ -14,6 +15,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
   };
 
   const now = 1775985000000; // Fixed deterministic baseline timestamp
+  const today = studyDayKey();
 
   it('حالت ۱: مطالعه در حال اجرا (Active studying in foreground) با اصلاح باگ شمارش دوباره', () => {
     // Partner has 1800s before this session. At heartbeat, session elapsed was 600s, today_seconds = 2400s.
@@ -31,7 +33,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
       session_elapsed_seconds: 600,
       today_seconds: 2400,
       today_tests: 15,
-      study_day: '2026-10-12',
+      study_day: today,
       updated_at: new Date(now - 10000).toISOString(), // 10s ago (< 45s fresh)
     };
 
@@ -61,7 +63,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
       session_elapsed_seconds: 120,
       today_seconds: 120,
       today_tests: 0,
-      study_day: '2026-10-12',
+      study_day: today,
       updated_at: new Date(now - 50000).toISOString(), // 50s ago (> 45s stale)
     };
 
@@ -88,7 +90,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
       session_elapsed_seconds: 600,
       today_seconds: 1800,
       today_tests: 10,
-      study_day: '2026-10-12',
+      study_day: today,
       updated_at: new Date(threeAndHalfHoursAgo).toISOString(), // > 3 hours ago
     };
 
@@ -117,7 +119,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
       session_elapsed_seconds: 1200, // 20m at last update
       today_seconds: 2200, // 1000 earlier + 1200
       today_tests: 5,
-      study_day: '2026-10-12',
+      study_day: today,
       updated_at: new Date(twentyMinutesAgo).toISOString(), // 20m ago (>> 45s, but well under 3h)
     };
 
@@ -144,7 +146,7 @@ describe('computePartnerLive Unified Live State Engine', () => {
       session_elapsed_seconds: 0,
       today_seconds: 3600,
       today_tests: 40,
-      study_day: '2026-10-12',
+      study_day: today,
       updated_at: new Date(now - 15000).toISOString(), // 15s ago
     };
 
@@ -154,5 +156,29 @@ describe('computePartnerLive Unified Live State Engine', () => {
     assert.equal(state.online, true, 'online should be true if fresh');
     assert.equal(state.sessionElapsedSeconds, 0, 'session elapsed should be 0');
     assert.equal(state.todaySeconds, 3600, 'today seconds preserved');
+  });
+
+  it('حالت ۵: ردیف دیروز نباید در «امروز» نشت کند (Cross-day leak guard)', () => {
+    const row = {
+      pair_code: 'PAIR123',
+      role: 'wife',
+      display_name: 'سارا',
+      is_studying: true,
+      online: false, // background
+      subject: 'bio',
+      subject_name: 'زیست‌شناسی',
+      timer_started_at: now - 600000,
+      accumulated_seconds: 0,
+      session_elapsed_seconds: 600,
+      today_seconds: 3600,
+      today_tests: 40,
+      study_day: '2020-01-01', // stale day, long past
+      updated_at: new Date(now - 15000).toISOString(),
+    };
+
+    const state = computePartnerLive(row, mockSettings, now);
+
+    assert.equal(state.isStudying, false, 'stale-day background study must not count as active today');
+    assert.equal(state.todaySeconds, 0, "yesterday's totals must not leak into today's display");
   });
 });
