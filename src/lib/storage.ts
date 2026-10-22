@@ -32,18 +32,26 @@ export function uid(): string {
 }
 
 export const ALLOWED_GEMINI_MODELS = [
+  'gemini-3.8-flash',
+  'gemini-3.7-flash',
+  'gemini-3.6-flash',
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
 ] as const;
 
 export const ALLOWED_OPENROUTER_MODELS = [
+  'minimax/minimax-m3.1-flash:free',
+  'openrouter/free',
+  'google/gemma-4-31b-it:free',
+  'nvidia/nemotron-3.5-super-vl:free',
+  'thinkingmachines/inkling-small:free',
   'deepseek/deepseek-chat',
   'deepseek/deepseek-r1',
-  'google/gemini-2.5-flash',
   'meta-llama/llama-3.3-70b-instruct',
-  'qwen/qwen-2.5-72b-instruct',
 ] as const;
+
+export const ALLOWED_OPENROUTER_FREE_DEFAULT = 'minimax/minimax-m3.1-flash:free';
 
 export function getDefaultSettings(): AppSettings {
   return {
@@ -59,6 +67,7 @@ export function getDefaultSettings(): AppSettings {
       provider: 'gemini',
       geminiKey: '',
       geminiModel: 'gemini-3.5-flash',
+      autoRotation: true,
       proactiveEnabled: true,
       poofyMode: 'dynamic',
       poofyPosition: 'left',
@@ -257,7 +266,7 @@ export function loadSettings(customEmail?: string): AppSettings {
   const validOpenrouterModel =
     typeof savedOpenrouterModel === 'string' && savedOpenrouterModel.trim()
       ? savedOpenrouterModel.trim()
-      : defaults.ai.openrouterModel || 'deepseek/deepseek-chat';
+      : ALLOWED_OPENROUTER_FREE_DEFAULT;
 
   const merged: AppSettings = {
     ...defaults,
@@ -267,7 +276,8 @@ export function loadSettings(customEmail?: string): AppSettings {
       geminiKey: typeof current?.ai?.geminiKey === 'string' ? current.ai.geminiKey : defaults.ai.geminiKey,
       geminiModel: validModel,
       ...(current?.ai?.openrouterKey ? { openrouterKey: current.ai.openrouterKey } : {}),
-      ...(current?.ai?.openrouterModel ? { openrouterModel: validOpenrouterModel } : {}),
+      openrouterModel: validOpenrouterModel,
+      autoRotation: current?.ai?.autoRotation !== false,
       proactiveEnabled: current?.ai?.proactiveEnabled !== undefined ? Boolean(current.ai.proactiveEnabled) : true,
       poofyMode: current?.ai?.poofyMode || 'dynamic',
       poofyPosition: current?.ai?.poofyPosition || 'left',

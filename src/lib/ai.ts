@@ -94,6 +94,12 @@ function isOpenAiThinkingError(message: string): boolean {
 }
 
 /**
+ * Sticky provider rotation memory: whichever personal provider answered last
+ * is preferred on the next call; the other one is used as automatic failover.
+ */
+let lastGoodProvider: 'gemini' | 'openrouter' | null = null;
+
+/**
  * Direct client-side call to Google Gemini REST API.
  * Supports optional SSE streaming via onChunk (only for the chat surface that benefits from it).
  */
@@ -394,35 +400,76 @@ async function executeAiTask(params: {
   const geminiKey = params.customKey || settings.ai.geminiKey?.trim() || '';
   const openrouterKey = settings.ai.openrouterKey?.trim() || '';
   const geminiModel = params.preferredModel || settings.ai.geminiModel || 'gemini-3.5-flash';
-  const openrouterModel = settings.ai.openrouterModel || 'deepseek/deepseek-chat';
+  const openrouterModel = settings.ai.openrouterModel || 'minimax/minimax-m3.1-flash:free';
   const baseUrl = getApiBaseUrl();
 
-  // Priority 1: User personal OpenRouter Key (Direct client-side, zero proxy latency)
-  if (provider === 'openrouter' && openrouterKey) {
-    return await callOpenRouterDirect({
-      apiKey: openrouterKey,
-      model: openrouterModel,
-      systemInstruction: params.systemInstruction,
-      prompt: params.userPrompt,
-      temperature: params.temperature,
-      responseMimeType: params.responseMimeType,
-      maxOutputTokens: params.maxOutputTokens,
-    });
+  // Track whether streaming already produced visible output — a failed
+  // mid-stream attempt must not be silently re-run on the other provider.
+  let streamedAnything = false;
+  const watchedOnChunk = params.onChunk
+    ? (partialText: string) => {
+        streamedAnything = true;
+        params.onChunk?.(partialText);
+      }
+    : undefined;
+  // Whichever provider answered successfully last time goes first; if it errors,
+  // the other provider (if a key exists) is tried immediately — Gemini ↔ OpenRouter.
+  const tryGemini = geminiKey
+    ? () =>
+        callGeminiDirect({
+          apiKey: geminiKey,
+          model: geminiModel,
+          systemInstruction: params.systemInstruction,
+          prompt: params.userPrompt,
+          inlineData: params.inlineData,
+          temperature: params.temperature,
+          responseMimeType: params.responseMimeType,
+          maxOutputTokens: params.maxOutputTokens,
+          onChunk: watchedOnChunk,
+        })
+    : null;
+  const tryOpenRouter = openrouterKey
+    ? () =>
+        callOpenRouterDirect({
+          apiKey: openrouterKey,
+          model: openrouterModel,
+          systemInstruction: params.systemInstruction,
+          prompt: params.userPrompt,
+          temperature: params.temperature,
+          responseMimeType: params.responseMimeType,
+          maxOutputTokens: params.maxOutputTokens,
+        })
+    : null;
+
+  const rotationOn = settings.ai.autoRotation !== false;
+  let first = provider === 'openrouter' ? tryOpenRouter : tryGemini;
+  let second = provider === 'openrouter' ? tryGemini : tryOpenRouter;
+
+  // Sticky preference: start with the provider that succeeded last time.
+  if (rotationOn && lastGoodProvider === 'gemini' && second === tryGemini) {
+    first = tryGemini;
+    second = tryOpenRouter;
+  } else if (rotationOn && lastGoodProvider === 'openrouter' && second === tryOpenRouter) {
+    first = tryOpenRouter;
+    second = tryGemini;
   }
 
-  // Priority 2: User personal Gemini Key (Direct client-side, streaming chat when supported)
-  if (geminiKey) {
-    return await callGeminiDirect({
-      apiKey: geminiKey,
-      model: geminiModel,
-      systemInstruction: params.systemInstruction,
-      prompt: params.userPrompt,
-      inlineData: params.inlineData,
-      temperature: params.temperature,
-      responseMimeType: params.responseMimeType,
-      maxOutputTokens: params.maxOutputTokens,
-      onChunk: params.onChunk,
-    });
+  if (first || second) {
+    let lastErr: unknown = null;
+    for (const attempt of [first, second]) {
+      if (!attempt) continue;
+      // Don't re-run the whole task on a different provider if streaming already
+      // produced visible output — a restart would duplicate the message bubble.
+      if (streamedAnything) throw lastErr || new Error('stream aborted');
+      try {
+        const text = await attempt();
+        lastGoodProvider = attempt === tryGemini ? 'gemini' : 'openrouter';
+        return text;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr ?? new Error('هیچ کلید هوش مصنوعی در تنظیمات فعال نیست.');
   }
 
   // Priority 3: Try backend proxy if available
@@ -708,6 +755,28 @@ ${message}
     preferredModel: model,
     maxOutputTokens: 1200,
     onChunk,
+  });
+}
+
+/**
+ * Poofy live brain: a very short, warm, fully AI-generated "thought" based on
+ * the student's real state. Used by the floating Poofy companion so it is no
+ * longer only a rule engine.
+ */
+const POOFY_SYSTEM_PROMPT = `تو «پوفی» هستی؛ همراه پفکی، دوست‌داشتنی و سبکِ مشاور کنکوریار.
+بر اساس «وضعیت امروز دانش‌آموز» که در پیام آمده، دقیقاً یک فکر کوتاه بنویس: یک یا دو جمله فارسی صمیمی (حداکثر ۲۰ کلمه) با حداکثر یک ایموجی.
+قوانین سخت: فقط همان متن واحد را خروجی بده — بدون برچسب، بدون مقدمه، بدون نقلослов، بدون فهرست.
+موضوع باید مربوط به کنکور/مطالعه/برنامه‌ریزی/مرور/انگیزه باشد. اگر وضعیت خوب بود تشویق کوتاه، اگر ضعف بود یک راه‌حل عملی خیلی کوچک بگو. عبارت خودِ وضعیت را تکرار نکن.`;
+
+export async function consultPoofyLive(contextSummary: string, model?: string): Promise<string> {
+  return await executeAiTask({
+    apiPath: '/api/ai/coach',
+    backendPayload: { message: contextSummary, context: {}, mode: 'poofy' },
+    systemInstruction: POOFY_SYSTEM_PROMPT,
+    userPrompt: contextSummary,
+    temperature: 0.9,
+    maxOutputTokens: 100,
+    preferredModel: model,
   });
 }
 

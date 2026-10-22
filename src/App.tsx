@@ -1225,6 +1225,7 @@ export default function App() {
           activeSubject={activeSubject}
           onNavigate={setActiveView}
           onUpdateSettings={handleUpdateSettings}
+          activeView={activeView}
         />
       )}
 

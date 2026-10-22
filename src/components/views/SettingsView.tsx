@@ -66,7 +66,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [geminiKey, setGeminiKey] = useState(settings.ai.geminiKey);
   const [geminiModel, setGeminiModel] = useState(settings.ai.geminiModel);
   const [openrouterKey, setOpenrouterKey] = useState(settings.ai.openrouterKey || '');
-  const [openrouterModel, setOpenrouterModel] = useState(settings.ai.openrouterModel || 'deepseek/deepseek-chat');
+  const [openrouterModel, setOpenrouterModel] = useState(
+    settings.ai.openrouterModel || 'minimax/minimax-m3.1-flash:free'
+  );
+  const [autoRotation, setAutoRotation] = useState(settings.ai.autoRotation !== false);
   const [showOpenrouterKey, setShowOpenrouterKey] = useState(false);
   const [proactiveEnabled, setProactiveEnabled] = useState(settings.ai.proactiveEnabled !== false);
   const [poofyMode, setPoofyMode] = useState<'dynamic' | 'quiet' | 'hidden'>(settings.ai.poofyMode || 'dynamic');
@@ -115,6 +118,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         geminiModel,
         openrouterKey: openrouterKey.trim(),
         openrouterModel,
+        autoRotation,
         proactiveEnabled,
         poofyMode,
         poofyPosition,
@@ -323,6 +327,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium text-xs"
                   >
                     <option value="gemini-3.5-flash">gemini-3.5-flash (پیشنهادی و پرسرعت)</option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash (جدیدترین و باهوش‌ترین)</option>
+                    <option value="gemini-3.7-flash">gemini-3.7-flash</option>
+                    <option value="gemini-3.6-flash">gemini-3.6-flash</option>
                     <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (سریع‌ترین)</option>
                     <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
                   </select>
@@ -377,10 +384,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-medium text-xs font-mono"
                     dir="ltr"
                   >
+                    <option value="minimax/minimax-m3.1-flash:free">minimax-m3.1-flash (رایگان و قوی — پیشنهادی)</option>
+                    <option value="openrouter/free">openrouter/free (انتخاب خودکار از بهترین‌های رایگان)</option>
+                    <option value="google/gemma-4-31b-it:free">google/gemma-4-31b-it (رایگان)</option>
+                    <option value="nvidia/nemotron-3.5-super-vl:free">nvidia/nemotron-3.5-super-vl (رایگان)</option>
+                    <option value="thinkingmachines/inkling-small:free">thinkingmachines/inkling-small (رایگان)</option>
                     <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (V3 - فوق‌العاده قوی)</option>
                     <option value="deepseek/deepseek-r1">deepseek/deepseek-r1 (استدلال عمیق تستی)</option>
-                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash</option>
-                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
                   </select>
                 </div>
 
@@ -421,6 +431,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Automatic provider rotation (Gemini ↔ OpenRouter) */}
+            <div className="flex items-center justify-between gap-3 p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
+              <div>
+                <p className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                  چرخش خودکار بین Gemini و OpenRouter
+                </p>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-relaxed">
+                  هر سرویسی که آخرین بار جواب داده اولویت می‌گیرد؛ اگر لحظه‌ای خطا داد، سرویس دیگر بلافاصله جواب می‌دهد (هر دو کلید لازم است).
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={autoRotation}
+                onClick={() => setAutoRotation(!autoRotation)}
+                className={`relative w-11 h-6 rounded-full transition-colors shrink-0 cursor-pointer ${
+                  autoRotation ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'
+                }`}
+              >
+                <span
+                  className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${
+                    autoRotation ? 'left-[22px]' : 'left-0.5'
+                  }`}
+                />
+              </button>
+            </div>
 
             {/* Proactive Counselor & Poofy Settings */}
             <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">

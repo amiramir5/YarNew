@@ -17,6 +17,7 @@ import {
 import { Session, AppSettings, MistakeCard, ViewId } from '../../types';
 import { studyDayKey, faNum } from '../../lib/jalali';
 import { getSubject } from '../../lib/constants';
+import { consultPoofyLive } from '../../lib/ai';
 import { PoofyMascot, PoofyMood } from './PoofyMascot';
 
 interface ProactiveFloatingWidgetProps {
@@ -27,6 +28,8 @@ interface ProactiveFloatingWidgetProps {
   activeSubject: string;
   onNavigate: (view: ViewId) => void;
   onUpdateSettings?: (settings: AppSettings) => void;
+  /** Current app view — the floating Poofy hides itself on the timer tab (only one Poofy at a time). */
+  activeView?: ViewId;
 }
 
 export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = ({
@@ -37,6 +40,7 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
   activeSubject,
   onNavigate,
   onUpdateSettings,
+  activeView,
 }) => {
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -94,6 +98,12 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
   // Mode and position from settings
   const poofyMode = settings.ai.poofyMode || 'dynamic';
   const poofyPosition = settings.ai.poofyPosition || 'left';
+
+  // ── Poofy live brain ────────────────────────────────────────────────────────
+  // Poofy's thought is no longer only local "if/else" rules: whenever the user
+  // has an AI key, a very short live thought is generated from their real state
+  // (Gemini with OpenRouter rotation/failover). Rules stay as offline fallback.
+  const [liveThought, setLiveThought] = useState<string | null>(null);
 
   // Dynamic intelligent voluntary thought of Poofy
   const thought = useMemo<{
@@ -186,6 +196,72 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
     };
   }, [isTimerRunning, activeSubject, todaySubjectMinutes, todayMinutes, gradeStats, sessions.length, dueMistakesCount, settings.dailyGoalMinutes]);
 
+  const displayedThought = useMemo(() => {
+    if (!liveThought) return thought;
+    return {
+      ...thought,
+      text: liveThought,
+      detail: 'پوفی همین حالا وضعیت واقعی‌ات را با هوش مصنوعی بررسی کرده ✨',
+    };
+  }, [thought, liveThought]);
+
+  // Live AI thought fetch — throttled to once per 10 minutes (session-cached)
+  // so quotas stay safe; silently falls back to the rule engine above.
+  useEffect(() => {
+    if (poofyMode === 'hidden' || isTimerRunning) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+    let cancelled = false;
+    const buildContext = () => {
+      const goal = settings.dailyGoalMinutes || 600;
+      const parts: string[] = [];
+      if (todayMinutes === 0) {
+        parts.push('هنوز هیچ جلسه مطالعه‌ای امروز ثبت نشده');
+      } else {
+        parts.push(`امروز ${faNum(todayMinutes)} از ${faNum(goal)} دقیقه هدف مطالعه شده`);
+      }
+      if (dueMistakesCount > 0) {
+        parts.push(`${faNum(dueMistakesCount)} کارت لایتنر موعد مرورش رسیده`);
+      }
+      const subjNames = Object.keys(todaySubjectMinutes).map((k) => getSubject(k).name);
+      if (subjNames.length) parts.push(`درس‌های امروز: ${subjNames.join('، ')}`);
+      if (settings.examTitle) parts.push(`هدف نهایی: ${settings.examTitle}`);
+      return parts.join('؛ ');
+    };
+
+    const fetchLive = async () => {
+      try {
+        const cacheKey = 'ky_poofy_live_v1';
+        const cached = JSON.parse(sessionStorage.getItem(cacheKey) || 'null') as
+          | { t: number; text: string }
+          | null;
+        if (cached?.text && Date.now() - cached.t < 10 * 60 * 1000) {
+          if (!cancelled) setLiveThought(cached.text);
+          return;
+        }
+        const text = await consultPoofyLive(buildContext());
+        const clean = (text || '').trim().replace(/^["«»]+|["«»]+$/g, '');
+        if (!cancelled && clean) {
+          setLiveThought(clean);
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify({ t: Date.now(), text: clean }));
+          } catch {}
+        }
+      } catch {
+        // No AI key / offline / quota — the rule-based thought from above stays.
+      }
+    };
+
+    fetchLive();
+    const interval = setInterval(fetchLive, 10 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [poofyMode, isTimerRunning, todayMinutes, dueMistakesCount]);
+  // ───────────────────────────────────────────────────────────────────────────
+
   // Gentle milestone celebration (auto-dismissing toast after 5s, NEVER looping on normal ticks)
   useEffect(() => {
     if (poofyMode === 'quiet' || poofyMode === 'hidden' || isTimerRunning) return;
@@ -238,8 +314,9 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
     });
   };
 
-  // If user disabled Poofy or hidden
-  if (poofyMode === 'hidden') {
+  // If user disabled Poofy, or a view already shows its own Poofy inline
+  // (timer tab has Poofy inside the timer circle) — exactly ONE Poofy on screen.
+  if (poofyMode === 'hidden' || activeView === 'timer') {
     return null;
   }
 
@@ -282,7 +359,7 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
           {/* Header */}
           <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
             <div className="flex items-center gap-2">
-              <PoofyMascot mood={thought.mood} size="sm" />
+              <PoofyMascot mood={displayedThought.mood} size="sm" />
               <div>
                 <h4 className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1">
                   <span>پوفی - همراه هوشمند کنکور</span>
@@ -304,10 +381,10 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
           {/* Dynamic Insight Bubble */}
           <div className="p-3 rounded-2xl bg-blue-50/70 dark:bg-blue-950/40 border border-blue-100 dark:border-blue-900/60">
             <p className="text-xs font-bold text-slate-800 dark:text-slate-100 leading-relaxed">
-              {thought.text}
+              {displayedThought.text}
             </p>
             <p className="text-[11px] text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
-              {thought.detail}
+              {displayedThought.detail}
             </p>
           </div>
 
@@ -403,7 +480,7 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
             className="p-1.5 rounded-2xl bg-white/90 dark:bg-[#0b172a]/90 backdrop-blur-md border border-blue-200 dark:border-blue-900 shadow-md text-blue-600 dark:text-blue-400 hover:scale-110 transition-all cursor-pointer flex items-center gap-1 group"
             title="بزرگ‌نمایی پوفی"
           >
-            <PoofyMascot mood={thought.mood} size="xs" />
+            <PoofyMascot mood={displayedThought.mood} size="xs" />
             <span className="text-[10px] font-black text-slate-600 dark:text-slate-300 pl-1">
               پوفی
             </span>
@@ -434,7 +511,7 @@ export const ProactiveFloatingWidget: React.FC<ProactiveFloatingWidgetProps> = (
           {/* Mascot Character with Click Trigger */}
           <div className="relative cursor-pointer group">
             <PoofyMascot
-              mood={isTimerRunning ? 'focus' : thought.mood}
+              mood={isTimerRunning ? 'focus' : displayedThought.mood}
               size="md"
               onClick={() => {
                 setMilestoneToast(null);

@@ -19,15 +19,23 @@ describe('AI Settings & Allowed Models Configuration', () => {
     assert.equal((defaults.ai as any).openrouterModel, undefined);
   });
 
+  it('enables automatic provider rotation by default', () => {
+    const defaults = getDefaultSettings();
+    assert.equal(defaults.ai.autoRotation, true);
+  });
+
   it('ALLOWED_GEMINI_MODELS matches expected candidate models', () => {
     assert.deepEqual(Array.from(ALLOWED_GEMINI_MODELS), [
+      'gemini-3.8-flash',
+      'gemini-3.7-flash',
+      'gemini-3.6-flash',
       'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
       'gemini-3.1-flash-lite',
     ]);
   });
 
-  it('resets invalid or obsolete models like gemini-3.8-flash back to default gemini-3.5-flash in loadSettings', () => {
+  it('resets invalid or unknown models back to default gemini-3.5-flash in loadSettings', () => {
     // Mock localStorage in global scope for Node test
     const storageStore: Record<string, string> = {};
     const mockStorage = {
@@ -42,7 +50,7 @@ describe('AI Settings & Allowed Models Configuration', () => {
       ...getDefaultSettings(),
       ai: {
         geminiKey: 'AIzaSyTestKey',
-        geminiModel: 'gemini-3.8-flash', // obsolete model
+        geminiModel: 'gemini-9.9-ultra-imaginary', // unknown model
       },
     } as any);
 
@@ -63,5 +71,32 @@ describe('AI Settings & Allowed Models Configuration', () => {
 
     const loaded = loadSettings();
     assert.equal(loaded.ai.geminiModel, 'gemini-3.1-flash-lite');
+  });
+
+  it('keeps the newest Gemini generation (3.8-flash) when it is selected', () => {
+    saveSettings({
+      ...getDefaultSettings(),
+      ai: {
+        geminiKey: 'AIzaSyTestKey',
+        geminiModel: 'gemini-3.8-flash',
+      },
+    });
+
+    const loaded = loadSettings();
+    assert.equal(loaded.ai.geminiModel, 'gemini-3.8-flash');
+  });
+
+  it('falls back to a free OpenRouter model when none is stored', () => {
+    const storageStore: Record<string, string> = {};
+    (globalThis as any).window = {};
+    (globalThis as any).localStorage = {
+      getItem: (key: string) => storageStore[key] || null,
+      setItem: (key: string, val: string) => { storageStore[key] = val; },
+      removeItem: (key: string) => { delete storageStore[key]; },
+    };
+
+    const loaded = loadSettings();
+    assert.equal(loaded.ai.openrouterModel, 'minimax/minimax-m3.1-flash:free');
+    assert.equal(loaded.ai.autoRotation, true);
   });
 });

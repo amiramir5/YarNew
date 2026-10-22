@@ -183,6 +183,7 @@ export interface AppSettings {
     provider?: 'gemini' | 'openrouter';
     openrouterKey?: string;
     openrouterModel?: string;
+    autoRotation?: boolean;
     proactiveEnabled?: boolean;
     poofyMode?: 'dynamic' | 'quiet' | 'hidden';
     poofyPosition?: 'left' | 'right';
