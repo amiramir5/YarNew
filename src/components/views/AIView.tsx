@@ -630,9 +630,6 @@ export const AIView: React.FC<AIViewProps> = ({
           <div>
             <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
               <span>پوفی - دستیار پفکی و مشاور هوشمند کنکور</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300 border border-blue-200/60 dark:border-blue-800/60">
-                Gemini & DeepSeek
-              </span>
             </h2>
             <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 leading-relaxed">
               سلام! من پوفی‌ام 🌟 همراهت برای تنظیم جدول برنامه رنگی، پاسخ به تست‌ها و تحلیل دقیق اشتباهات.
@@ -654,16 +651,7 @@ export const AIView: React.FC<AIViewProps> = ({
                   فعال‌سازی سریع موتور هوش مصنوعی برای پاسخ‌دهی آنی (زیر ۵ ثانیه)
                 </h4>
                 <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed mt-0.5">
-                  برای حل مستقیم تست‌ها و حل عکس بدون معطلی، کلید رایگان Google Gemini را از{' '}
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-bold text-blue-600 dark:text-blue-400 underline"
-                  >
-                    Google AI Studio
-                  </a>{' '}
-                  یا کلید OpenRouter را در کادر زیر وارد کنید:
+                  برای فعال‌سازی پوفی، کلید دسترسی رایگان را در کادر زیر وارد کنید:
                 </p>
               </div>
             </div>
@@ -678,8 +666,8 @@ export const AIView: React.FC<AIViewProps> = ({
               onChange={(e) => setQuickProvider(e.target.value as any)}
               className="px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-800 text-xs font-bold text-slate-800 dark:text-slate-200"
             >
-              <option value="gemini">Google Gemini (رایگان و سریع)</option>
-              <option value="openrouter">OpenRouter / DeepSeek</option>
+              <option value="gemini">سرویس اصلی (رایگان و سریع)</option>
+              <option value="openrouter">سرویس پشتیبان</option>
             </select>
 
             <div className="flex-1 relative">
@@ -687,7 +675,7 @@ export const AIView: React.FC<AIViewProps> = ({
                 type={showQuickKey ? 'text' : 'password'}
                 value={quickKeyInput}
                 onChange={(e) => setQuickKeyInput(e.target.value)}
-                placeholder={quickProvider === 'gemini' ? 'کلید Gemini (AIzaSy...)' : 'کلید OpenRouter (sk-or-v1-...)'}
+                placeholder="کلید دسترسی را وارد کنید"
                 className="w-full px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-800 bg-white dark:bg-slate-800 text-xs font-mono pl-9 text-slate-800 dark:text-slate-200 focus:outline-none focus:border-blue-500"
                 dir="ltr"
               />

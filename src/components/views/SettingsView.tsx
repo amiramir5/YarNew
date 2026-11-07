@@ -273,12 +273,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <div className="flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
               <h3 className="text-sm font-extrabold text-slate-900 dark:text-slate-100">
-                موتور هوش مصنوعی و مشاور همراه (Gemini / DeepSeek)
+                پوفی - مشاور هوشمند کنکور
               </h3>
             </div>
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-200">
-              Dual-Engine AI
-            </span>
           </div>
 
           <div className="space-y-4">
@@ -297,7 +294,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100'
                   }`}
                 >
-                  Google Gemini (فلش پرسرعت)
+                  سرویس اصلی (پرسرعت)
                 </button>
 
                 <button
@@ -309,7 +306,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       : 'border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100'
                   }`}
                 >
-                  OpenRouter / DeepSeek
+                  سرویس پشتیبان
                 </button>
               </div>
             </div>
@@ -319,7 +316,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="space-y-3.5 animate-in fade-in">
                 <div>
                   <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1 text-xs">
-                    نسخه مدل Gemini
+                    نسخه مدل
                   </label>
                   <select
                     value={geminiModel}
@@ -338,7 +335,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
                     <label className="block font-bold text-slate-700 dark:text-slate-300 text-xs">
-                      کلید اختصاصی Google Gemini API Key
+                      کلید دسترسی
                     </label>
                     <a
                       href="https://aistudio.google.com/app/apikey"
@@ -346,7 +343,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       rel="noreferrer"
                       className="text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 cursor-pointer"
                     >
-                      دریافت رایگان کلید از Google AI Studio
+                      راهنمای دریافت کلید
                     </a>
                   </div>
                   <div className="relative">
@@ -354,7 +351,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                       type={showGeminiKey ? 'text' : 'password'}
                       value={geminiKey}
                       onChange={(e) => setGeminiKey(e.target.value)}
-                      placeholder="کلید Gemini را اینجا وارد کنید (مثلاً AIzaSy...)"
+                      placeholder="کلید دسترسی را وارد کنید"
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 font-mono text-xs pl-10 focus:outline-none focus:border-blue-500"
                       dir="ltr"
                     />
@@ -376,7 +373,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <div className="space-y-3.5 animate-in fade-in">
                 <div>
                   <label className="block font-bold text-slate-600 dark:text-slate-400 mb-1 text-xs">
-                    مدل OpenRouter
+                    نسخه مدل
                   </label>
                   <select
                     value={openrouterModel}

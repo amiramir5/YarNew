@@ -169,7 +169,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
         isZenMode
           ? isDarkMode
             ? 'fixed inset-0 z-50 bg-[#060c18] text-white flex flex-col items-center justify-center p-4'
-            : 'fixed inset-0 z-50 bg-gradient-to-b from-[#EEF2F6] via-[#E2EAF4] to-[#D5E2F0] text-slate-900 flex flex-col items-center justify-center p-4'
+            : 'fixed inset-0 z-50 bg-[radial-gradient(120%_120%_at_50%_18%,#FBFDFF_0%,#EAF2FF_42%,#D8E6FA_100%)] text-slate-900 flex flex-col items-center justify-center p-4'
           : 'space-y-6 pb-12 animate-in fade-in duration-200'
       }`}
     >
@@ -504,7 +504,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
         className={`transition-all ${
           isZenMode
             ? 'my-auto flex flex-col items-center justify-center'
-            : 'neu-card p-6 sm:p-10 rounded-3xl flex flex-col items-center justify-center'
+            : 'neu-card p-6 sm:p-10 rounded-3xl flex flex-col items-center justify-center bg-gradient-to-b from-[#F4F8FF] via-[#EAF1FF] to-[#DFE9FF] dark:from-[#111D3D] dark:via-[#0F1A38] dark:to-[#0D1730]'
         }`}
       >
         <div
@@ -513,7 +513,7 @@ export const TimerView: React.FC<TimerViewProps> = ({
               ? isDarkMode
                 ? 'bg-[#0a1426]/90 backdrop-blur-md rounded-full shadow-[0_0_50px_rgba(37,99,235,0.22)] border border-blue-500/20'
                 : 'bg-white/95 backdrop-blur-md rounded-full shadow-[0_16px_40px_rgba(37,99,235,0.14),0_2px_8px_rgba(15,23,42,0.06)] border border-blue-100'
-              : 'rounded-full neu-inset'
+              : 'rounded-full bg-white dark:bg-[#0D1830] border border-blue-100/90 dark:border-blue-900/50 shadow-[0_22px_45px_-18px_rgba(37,99,235,0.45),0_2px_8px_-2px_rgba(15,23,42,0.08)] dark:shadow-[inset_3px_3px_6px_rgba(0,0,0,0.6),inset_-3px_-3px_6px_rgba(28,45,84,0.3)]'
           }`}
         >
           {/* SVG Ring */}
@@ -527,8 +527,8 @@ export const TimerView: React.FC<TimerViewProps> = ({
                 isZenMode
                   ? isDarkMode
                     ? 'text-blue-950/60'
-                    : 'text-slate-200'
-                  : 'text-slate-200/70 dark:text-blue-950/40'
+                    : 'text-blue-200/80'
+                  : 'text-blue-200/90 dark:text-blue-800/50'
               }
               strokeWidth="9"
               stroke="currentColor"

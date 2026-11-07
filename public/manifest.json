@@ -2,7 +2,7 @@
   "id": "konkoor-yar-pwa-v2",
   "name": "کنکوریار ۲.۰ — دستیار هوشمند و رقابتی کنکور",
   "short_name": "کنکوریار",
-  "description": "دستیار جامع مطالعه و کنکور سراسری تجربی با تایمر Yeolpumta، جعبه لایتنر هوشمند، رقابت دونفره زنده و آزمون‌ساز هوشمند",
+  "description": "زمان‌سنج، برنامه‌ریزی، جعبه لایتنر و رقابت دونفره برای کنکور",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
@@ -42,21 +42,21 @@
     {
       "name": "تایمر مطالعه",
       "short_name": "تایمر",
-      "description": "شروع تایمر هوشمند مطالعه",
+      "description": "شروع زمان‌سنج مطالعه",
       "url": "./?tab=timer",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "رقابت دونفره",
       "short_name": "دونفره",
-      "description": "مشاهده وضعیت زنده مطالعه دونفره",
+      "description": "مشاهده رقابت دونفره",
       "url": "./?tab=couple",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     },
     {
       "name": "جعبه لایتنر",
       "short_name": "لایتنر",
-      "description": "مرور فلش‌کارت‌ها و تست‌ها",
+      "description": "مرور کارت‌های لایتنر امروز",
       "url": "./?tab=leitner",
       "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }]
     }
