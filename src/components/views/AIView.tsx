@@ -40,6 +40,7 @@ import {
   ScheduleProposal,
   DailyPlan,
   AppSettings,
+  Exam,
 } from '../../types';
 import {
   SUBJECTS,
@@ -67,6 +68,7 @@ import { LiveCameraModal } from '../common/LiveCameraModal';
 import { loadStudyResources, saveStudyResources, loadSettings, saveSettings, uid } from '../../lib/storage';
 import { studyDayKey, faNum } from '../../lib/jalali';
 import { compressImage } from '../../lib/imageUtils';
+import { buildStudySnapshot, formatSnapshotForPrompt } from '../../lib/studySnapshot';
 
 interface AIViewProps {
   sessions: Session[];
@@ -75,6 +77,10 @@ interface AIViewProps {
   soundEnabled: boolean;
   settings?: AppSettings;
   plans?: DailyPlan[];
+  exams?: Exam[];
+  liveTimerSeconds?: number;
+  isTimerRunning?: boolean;
+  activeTimerSubject?: string;
   onSavePlan?: (plan: DailyPlan) => void;
   onUpdateSettings?: (settings: AppSettings) => void;
 }
@@ -86,6 +92,10 @@ export const AIView: React.FC<AIViewProps> = ({
   soundEnabled,
   settings,
   plans,
+  exams,
+  liveTimerSeconds,
+  isTimerRunning,
+  activeTimerSubject,
   onSavePlan,
   onUpdateSettings,
 }) => {
@@ -378,13 +388,30 @@ export const AIView: React.FC<AIViewProps> = ({
     setIsCoachLoading(true);
 
     try {
+      // A real snapshot of the student's data. Previously only session/mistake
+      // *counts* were sent, so the coach could not reason about hours, subjects,
+      // exam percents or whether the student is behind schedule.
+      const snapshot = buildStudySnapshot({
+        sessions,
+        mistakes,
+        exams,
+        plans,
+        progressList,
+        settings,
+        liveTimerSeconds,
+        isTimerRunning,
+        activeTimerSubject,
+      });
+
       const context = {
         goal: coachGoal,
-        userHistory: 'داوطلب سال سوم کنکور تجربی با اهداف رتبه برتر و تراز بالای کانون قلم‌چی و دانشگاه‌های علوم پزشکی',
-        totalSessions: sessions.filter((s) => !s.deleted_at).length,
-        totalMistakes: mistakes.filter((m) => !m.deleted_at).length,
-        recentProgress: progressList.slice(-10),
-        activeResource: activeResource ? { name: activeResource.name, subject: activeResource.subject } : undefined,
+        userHistory:
+          'داوطلب سال سوم کنکور تجربی با اهداف رتبه برتر و تراز بالای کانون قلم‌چی و دانشگاه‌های علوم پزشکی',
+        snapshot,
+        snapshotText: formatSnapshotForPrompt(snapshot),
+        activeResource: activeResource
+          ? { name: activeResource.name, subject: activeResource.subject }
+          : undefined,
       };
 
       // Streaming draft: last assistant message is edited in place as tokens arrive

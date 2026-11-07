@@ -1182,6 +1182,10 @@ export default function App() {
               soundEnabled={settings.soundEnabled}
               settings={settings}
               plans={plans}
+              exams={exams}
+              liveTimerSeconds={elapsedSeconds}
+              isTimerRunning={isTimerRunning}
+              activeTimerSubject={activeSubject}
               onSavePlan={handleSavePlan}
               onUpdateSettings={handleUpdateSettings}
             />
